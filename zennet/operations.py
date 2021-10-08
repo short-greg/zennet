@@ -3,18 +3,32 @@ import numpy as np
 import torch
 from abc import ABC, abstractclassmethod, abstractmethod
 
+from torch._C import Value
+from . import utils
+
 from .utils import NumpyPort, Port, TorchPort
 
 
-class Operation(ABC):
+class Operation(object):
+
+    def __init__(self, port: Port):
+        super().__init__()
+        self._port = port
 
     @property
     def ports(self) -> typing.List[Port]:
-        pass
+        return self._port.to_list()
 
-    @abstractmethod
+    def validate(self, x):
+        if not self._port.accept(x):
+            raise ValueError("Invalid signal for port.")
+
     def forward(self, x):
-        pass
+        self.validate(x)
+        return x
+
+    def __call__(self, x: typing.Iterable[utils.Signal]):
+        return self.forward(x)
 
 
 class TorchOperation(Operation):
@@ -45,7 +59,6 @@ class Numpy2Torch(TorchOperation):
         super().__init__(self)
         self._operation = numpy_operation
         self._to_device = to_device
-        # self.
 
     @property
     def ports(self) -> typing.List[TorchPort]:
@@ -58,16 +71,18 @@ class Numpy2Torch(TorchOperation):
 
 class Torch2Numpy(NumpyOperation):
 
-    def __init__(self, torch_operation: TorchOperation):
+    def __init__(self, torch_operation: TorchOperation, port: utils.TorchPort):
         super().__init__(self)
-        # self.
+        self._operation = torch_operation
+        self._port = port
 
     @property
     def ports(self) -> typing.List[NumpyPort]:
         pass
 
-    @abstractmethod
-    def forward(self, x):
-        pass
+    def forward(self, x: typing.Iterable[utils.TorchSignal]):
+        super().__init__(self)
 
-
+        return self._operation(
+            map(lambda x: x.to_numpy(), x)
+        )
