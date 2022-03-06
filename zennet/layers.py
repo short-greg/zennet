@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractclassmethod, abstractmethod
 from functools import singledispatchmethod
+import typing
 import torch as th
 
 from abc import ABC, abstractproperty
@@ -118,19 +119,17 @@ class Layer(ABC):
         pass
 
     @abstractmethod
-    def backward(self, x, y, param_update: bool=True):
+    def backward(self, x, t, param_update: bool=True):
         pass
 
-    @abstractmethod
-    def updateParams(self, x, t):
-        pass
-
-    @abstractmethod
-    def updateInput(self, x, t):
-        pass
+    def update(self, x, ys, t):
+        self.backward(x, ys, t, True)    
+        
+    def update_x(self, x, ys, t):
+        return self.backward(x, ys, t, False) 
 
 
-class TorchLayer(Layer):
+class TorchNN(Layer):
 
     def __init__(self, module: th.Module, optim_f, loss: th.Module, input_tau: float=1e-3):
         
@@ -143,29 +142,90 @@ class TorchLayer(Layer):
         y = self._module.forward(x)
         return self._loss(y, t)
 
-    def updateOutputs(self, x):
+    def excite(self, x):
         return self.forward(x)
 
     def forward(self, x):
+        # use the grad in the backward method
+        x.retain_grad()
         return self._module.forward(x)
 
-    def backward(self, x, t, param_update: bool=True):
+    def backward(self, x, ys, t, update: bool=True):
         self._optim.zero_grad()
-        result = self.assess(x, t)
+        result = self.assess(ys, t)
         result.backward()
-        self._optim.step()
-        updated = x.grad
-        return x + updated * self.input_tau
-    
-    def updateInput(self, x, t):
-        result = self.assess(x, t)
-        result.backward()
+        if update:
+            self._optim.step()
         updated = x.grad
         return x + updated * self.input_tau
 
-    def updateParams(self, x, t):
-        self._optim.zero_grad()
-        result = self.assess(x, t)
-        result.backward()
-        self._optim.step()
 
+class Sequence(Layer):
+
+    def __init__(self, layers: typing.List[Layer]):
+
+        if len(self._layers) == 0:
+            raise ValueError(f'Length of sequence must be greater than 0')
+        self._layers = layers
+
+    def excite(self, x):
+        ys = []
+        y = x
+        for layer in self._layers:
+            y = layer.excite(y)
+            ys.append(y)
+        return ys
+
+    def forward(self, x):
+        y = x
+        for layer in self._layers[:-1]:
+            y = layer.forward(y)
+        return self._module.forward(x)
+
+    def backward(self, x, ys, t, update: bool=True):
+        xs = [x] + ys[:-1]
+        for x_i, y_i, layer in reversed(xs, ys, self._layers):
+            t = layer.backward(x_i, y_i, t, update)
+        return t
+
+    def update(self, x, ys, t):
+        self.backward(x, ys, t, True)    
+        
+    def update_x(self, x, ys, t):
+        return self.backward(x, ys, t, False)    
+
+
+class TH2NP(Layer):
+
+    def excite(self, x):
+        return self.forward(x)
+
+    def forward(self, x):
+        return x.detach().cpu().numpy()
+
+    def backward(self, x, ys, t, update: bool=True):
+        return th.from_numpy(t)
+
+    def update(self, x, ys, t):
+        self.backward(x, ys, t, True)    
+        
+    def update_x(self, x, ys, t):
+        return self.backward(x, ys, t, False)   
+
+
+class NP2TH(Layer):
+
+    def excite(self, x):
+        return self.forward(x)
+
+    def forward(self, x):
+        return th.from_numpy(x)
+
+    def backward(self, x, ys, t, update: bool=True):
+        return t.detach().cpu().numpy()
+
+    def update(self, x, ys, t):
+        self.backward(x, ys, t, True)    
+        
+    def update_x(self, x, ys, t):
+        return self.backward(x, ys, t, False)
