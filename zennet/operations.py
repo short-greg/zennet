@@ -4,9 +4,9 @@ import torch
 from abc import ABC, abstractclassmethod, abstractmethod
 
 from torch._C import Value
-from . import utils
+from . import _utils
 
-from .utils import NumpyPort, Port, TorchPort
+from ._utils import NumpyPort, Port, TorchPort
 
 
 class Operation(object):
@@ -27,7 +27,7 @@ class Operation(object):
         self.validate(x)
         return x
 
-    def __call__(self, x: typing.Iterable[utils.Signal]):
+    def __call__(self, x: typing.Iterable[_utils.Signal]):
         return self.forward(x)
 
 
@@ -71,7 +71,7 @@ class Numpy2Torch(TorchOperation):
 
 class Torch2Numpy(NumpyOperation):
 
-    def __init__(self, torch_operation: TorchOperation, port: utils.TorchPort):
+    def __init__(self, torch_operation: TorchOperation, port: _utils.TorchPort):
         super().__init__(self)
         self._operation = torch_operation
         self._port = port
@@ -80,7 +80,7 @@ class Torch2Numpy(NumpyOperation):
     def ports(self) -> typing.List[NumpyPort]:
         pass
 
-    def forward(self, x: typing.Iterable[utils.TorchSignal]):
+    def forward(self, x: typing.Iterable[_utils.TorchSignal]):
         super().__init__(self)
 
         return self._operation(
