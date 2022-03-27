@@ -3,6 +3,7 @@
 from abc import ABC, abstractclassmethod, abstractmethod
 from functools import singledispatchmethod
 import typing
+import sklearn
 import torch as th
 import torch.nn as nn
 
@@ -10,7 +11,7 @@ from abc import ABC, abstractproperty
 from dataclasses import dataclass
 import torch as th
 import numpy as np
-
+import torch
 
 torch_id = "torch"
 numpy_id = "numpy"
@@ -161,6 +162,56 @@ class TorchNN(Machine):
         updated = x.grad
         return x + updated
 
+
+class TorchNNBackwardMixin(object):
+
+    def __init__(self, *args, **kwargs):
+        TorchNN.__init__(self, *args, **kwargs)
+    
+    @abstractmethod
+    def backward(self, x, t, ys=None, update: bool=True):
+        raise NotImplementedError
+
+
+class ClassBackwardMixin(TorchNNBackwardMixin):
+
+    def backward(self, x, t, ys=None, update: bool=True):
+        x_prime = TorchNN.backward(self, x, t, ys, update)
+        return torch.clamp(x_prime, 0.0, 1.0)
+
+
+class SklearnMachine(Machine):
+
+    def __init__(self, machines: typing.List, loss: typing.Callable):
+        super().__init__()
+        self._machines = machines
+        self._loss = loss
+
+    def assess(self, x, t):
+        y = self.forward(x)
+        return self._loss(y, t)
+
+    def update_ys(self, x):
+        return self.forward(x)
+
+    def forward(self, x):
+        return np.stack([machine.predict(x) for machine in self._machines])
+
+    def update(self, x, t, ys=None):
+        for machine in self._machines:
+            machine.partial_fit(x, t)
+        
+    def update_x(self, x, t, ys=None):
+        pass
+        # need to calculate the updated inputs
+        # pattern search
+
+    def backward(self, x, t, ys=None, update: bool=True):
+        
+        if update:
+            self.update(x, t, ys)
+        return self.update_x(x, t, ys)
+        
 
 class Sequence(Machine):
 
