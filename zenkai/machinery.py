@@ -1,6 +1,7 @@
 
 
 from abc import ABC, abstractclassmethod, abstractmethod
+from audioop import reverse
 from functools import singledispatchmethod
 import typing
 import sklearn
@@ -109,11 +110,11 @@ class Port(object):
 class Machine(ABC):
 
     @abstractmethod
-    def assess(self, x, t):
+    def assess(self, x, t, y=None):
         pass
 
     @abstractmethod
-    def update_ys(self, x):
+    def update_ys(self, x) -> typing.Tuple[typing.Any, typing.Any]:
         pass
 
     @abstractmethod
@@ -122,6 +123,10 @@ class Machine(ABC):
 
     @abstractmethod
     def backward(self, x, t, ys=None, param_update: bool=True):
+        pass
+
+    @abstractmethod
+    def get_y_out(self, ys):
         pass
 
     def update(self, x, t, ys=None):
@@ -139,12 +144,21 @@ class TorchNN(Machine):
         self._optim = optim_f(module.parameters())
         self._loss = loss
 
-    def assess(self, x, t):
-        y = self._module.forward(x)
+    def assess(self, x, t, ys=None):
+        if ys is None:
+            y = self.forward(x)
+        else:
+            y = ys[1]
+
         return self._loss(y, t)
 
     def update_ys(self, x):
-        return self.forward(x)
+        x = x.detach()
+        y = self.forward(x)
+        return y, [x, y]
+    
+    def get_y_out(self, ys):
+        return ys[1]
 
     def forward(self, x):
         # use the grad in the backward method
@@ -153,9 +167,16 @@ class TorchNN(Machine):
         return self._module.forward(x)
 
     def backward(self, x, t, ys=None, update: bool=True):
-        ys = ys or self.update_ys(x)
+
+        if ys is None:
+            x = x.detach()
+            y, _ = self.forward(x)
+        else:
+            y = ys[1]
+            x = ys[0]
         self._optim.zero_grad()
-        result = self.assess(ys, t)
+    
+        result = self._loss(y, t)
         result.backward()
         if update:
             self._optim.step()
@@ -187,12 +208,16 @@ class SklearnMachine(Machine):
         self._machines = machines
         self._loss = loss
 
-    def assess(self, x, t):
-        y = self.forward(x)
+    def assess(self, x, t, ys=None):
+        if y is None:
+            y = self.forward(x)
+        else:
+            ys = ys
         return self._loss(y, t)
 
     def update_ys(self, x):
-        return self.forward(x)
+        y = self.forward(x)
+        return y, y
 
     def forward(self, x):
         return np.stack([machine.predict(x) for machine in self._machines])
@@ -205,6 +230,9 @@ class SklearnMachine(Machine):
         pass
         # need to calculate the updated inputs
         # pattern search
+
+    def get_y_out(self, ys):
+        return ys
 
     def backward(self, x, t, ys=None, update: bool=True):
         
@@ -220,48 +248,71 @@ class Sequence(Machine):
             raise ValueError(f'Length of sequence must be greater than 0')
         self.machines = machines
     
-    def assess(self):
-        # TODO: Write
-        pass
+    # maybe i need to pass in all ys
+    # cause this is not optimized
+    def assess(self, x, t, ys=None):
+        y = x
+        for machine in self.machines:
+            x = y
+            y = machine.forward(x) 
+        
+        return self.machines[-1].assess(
+            x, t, y
+        )
+
+    def get_y_out(self, ys):
+        return self.machines[-1].get_y_out(ys[-1]) 
 
     def update_ys(self, x):
         ys = []
         y = x
         for machine in self.machines:
-            y = machine.update_ys(y)
-            ys.append(y)
-        return ys
+            y, ys_i = machine.update_ys(y)
+            ys.append(ys_i)
+        return y, ys
 
     def forward(self, x):
         y = x
-        for layer in self.layers:
+        for layer in self.machines:
             y = layer.forward(y)
         return y
 
     def backward(self, x, t, ys=None, update: bool=True):
-        ys = ys or self.update_ys(x)
-        xs = [x] + ys[:-1]
-        for x_i, y_i, layer in reversed(xs, ys, self.layers):
-            t = layer.backward(x_i, t, y_i, update)
+        if ys is None:
+            _, ys = self.update_ys(x)
+        
+        xs = [x]
+        for y_i, machine in zip(ys[:-1], self.machines[:-1]):
+            xs.append(machine.get_y_out(y_i))
+
+        for x_i, y_i, machine in zip(reversed(xs), reversed(ys), reversed(self.machines)):
+            t = machine.backward(x_i, t, y_i, update)
         return t
 
 
-class Processor(object):
+class Processor(ABC):
 
+    @abstractmethod
     def update_ys(self, x):
-        return self.forward(x)
+        pass
 
+    @abstractmethod
     def forward(self, x):
-        return x.detach().cpu().numpy()
+        pass
 
+    @abstractmethod
     def backward(self, x, t, ys=None):
-        return th.from_numpy(t)
+        pass
 
+    @abstractmethod
+    def get_y_out(self, ys):
+        pass
 
 class TH2NP(Processor):
 
     def update_ys(self, x):
-        return self.forward(x)
+        y = self.forward(x)
+        return y, y
 
     def forward(self, x):
         return x.detach().cpu().numpy()
@@ -269,50 +320,113 @@ class TH2NP(Processor):
     def backward(self, x, t, ys=None):
         return th.from_numpy(t)
 
+    def get_y_out(self, ys):
+        return ys
 
 class NP2TH(Processor):
 
+    def __init__(self, dtype: torch.dtype=torch.float32):
+        self.dtype = dtype
+
     def update_ys(self, x):
-        return self.forward(x)
+        y = self.forward(x)
+        return y, y
 
     def forward(self, x):
-        return th.from_numpy(x)
+        return th.tensor(x, dtype=self.dtype)
+        # return th.from_numpy(x)
 
     def backward(self, x, t, ys=None):
         return t.detach().cpu().numpy()
 
+    def get_y_out(self, ys):
+        return ys
 
-class Processed(Machine):
-    
-    def __init__(self, processors: typing.List[Processor], machine: Machine):
+
+class CompositeProcessor(Processor):
+
+    def __init__(self, processors: typing.List[Processor]):
+
         self.processors = processors
-        self.machine = machine
-    
-    def assess(self):
-        # TODO: Write
-        pass
-    
+
     def update_ys(self, x):
         ys = []
         y = x
         for processor in self.processors:
-            y = processor.forward(y)
-            ys.append(y)
-        y.append(self.machine.update_ys(y))
-        return ys
+            y, ys_i = processor.update_ys(y)
+            ys.append(ys_i)
+        return y, ys
 
     def forward(self, x):
         y = x
         for processor in self.processors:
             y = processor.forward(y)
+        return y
+
+    def backward(self, x, t, ys=None):
+
+        if ys is None:
+            _, ys = self.update_ys(x)
+        
+        xs = [x] + ys[:-1]
+        for x_i, y_i, processor in zip(
+            reversed(xs), reversed(ys[:-1]), reversed(self.processors)):
+            t = processor.backward(x_i, t, y_i)
+        return t
+
+    def get_y_out(self, ys):
+        return self.processors[-1].get_y_out(ys[-1])
+
+
+class Processed(Machine):
+    
+    def __init__(
+        self, processors: typing.List[Processor], 
+        machine: Machine
+    ):
+        self.processors = CompositeProcessor(processors)
+        self.machine = machine
+    
+    def assess(self, x, t, ys=None):
+        if y is None:
+            y = self.forward(x)
+        else:
+            y = self.machine.get_y_out(ys[1])
+        return self.machine.assess(y, t)
+    
+    def update_ys(self, x):
+        y, ys_i = self.processors.update_ys(x)
+        # y = ys[-1] if ys[-1] is not None else x
+        y, ys_j = self.machine.update_ys(y)
+        return y, [ys_i, ys_j]
+
+    def forward(self, x):
+        y = self.processors.forward(x)
         return self.machine.forward(y)
 
     def backward(self, x, t, ys=None, update: bool=True):
-        xs = [x] + ys[:-2]
-        t = self.machine.backward(ys[-2], t, ys[-1], update)
-        for x_i, y_i, processor in reversed(xs, ys[:-1], self.processors):
-            t = processor.backward(x_i,  t, y_i,)
-        return t
+        if ys is None:
+            _, ys = self.update_ys(x)
+
+        y_in = self.processors.get_y_out(ys[0])
+        t = self.machine.backward(y_in, t, ys[1], update)
+        return self.processors.backward(x, t, ys[0])
+
+    def get_y_out(self, ys):
+        return self.machine.get_y_out(ys[-1])
+
+
+class WeightedLoss(nn.Module):
+    
+    def __init__(self, nn_loss: torch.nn.Module, weight: float):
+
+        super().__init__()
+        self.nn_loss = nn_loss
+        self.weight = weight
+
+    def forward(self, x, t):
+
+        return self.weight * self.nn_loss(x, t)
 
 
 # class THLoss(Layer):
