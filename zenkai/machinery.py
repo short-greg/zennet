@@ -174,13 +174,16 @@ class TorchNN(Machine):
             y = ys[1]
             x = ys[0]
         self._optim.zero_grad()
-    
         result = self._loss(y, t)
         result.backward()
         if update:
             self._optim.step()
         updated = x.grad
-        return x + updated
+        return x - updated
+    
+    @property
+    def module(self):
+        return self._module
 
 
 class TorchNNBackwardMixin(object):
@@ -197,7 +200,11 @@ class ClassBackwardMixin(TorchNNBackwardMixin):
 
     def backward(self, x, t, ys=None, update: bool=True):
         x_prime = TorchNN.backward(self, x, t, ys, update)
-        return torch.clamp(x_prime, 0.0, 1.0)
+        return torch.clamp(x_prime, 0.0, 1.0).detach()
+
+
+class TorchClassNN(ClassBackwardMixin, TorchNN):
+    pass
 
 
 class SklearnMachine(Machine):
@@ -282,7 +289,7 @@ class Sequence(Machine):
         for y_i, machine in zip(ys[1:-1], self.machines[:-1]):
             xs.append(machine.get_y_out(y_i))
 
-        for x_i, y_i, machine in zip(reversed(xs), reversed(ys), reversed(self.machines)):
+        for x_i, y_i, machine in zip(reversed(xs), reversed(ys[1:]), reversed(self.machines)):
             t = machine.backward(x_i, t, y_i, update)
         return t
 

@@ -72,7 +72,7 @@ sequence = machinery.Sequence([layer1, layer2])
 t = t_processor.forward(t)
 y = sequence.forward(X)
 
-# print(X, t)
+print(X, t)
 # print(layer.assess(X, t))
 
 print(sequence.backward(X, t))
