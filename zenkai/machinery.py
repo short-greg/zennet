@@ -149,7 +149,6 @@ class TorchNN(Machine):
             y = self.forward(x)
         else:
             y = ys[1]
-
         return self._loss(y, t)
 
     def update_ys(self, x):
@@ -170,7 +169,7 @@ class TorchNN(Machine):
 
         if ys is None:
             x = x.detach()
-            y, _ = self.forward(x)
+            y = self.forward(x)
         else:
             y = ys[1]
             x = ys[0]
@@ -251,20 +250,18 @@ class Sequence(Machine):
     # maybe i need to pass in all ys
     # cause this is not optimized
     def assess(self, x, t, ys=None):
-        y = x
-        for machine in self.machines:
-            x = y
-            y = machine.forward(x) 
+        if ys is None:
+            _, ys = self.update_ys(x)
         
         return self.machines[-1].assess(
-            x, t, y
+            x, t, ys[-1]
         )
 
     def get_y_out(self, ys):
         return self.machines[-1].get_y_out(ys[-1]) 
 
     def update_ys(self, x):
-        ys = []
+        ys = [x]
         y = x
         for machine in self.machines:
             y, ys_i = machine.update_ys(y)
@@ -282,7 +279,7 @@ class Sequence(Machine):
             _, ys = self.update_ys(x)
         
         xs = [x]
-        for y_i, machine in zip(ys[:-1], self.machines[:-1]):
+        for y_i, machine in zip(ys[1:-1], self.machines[:-1]):
             xs.append(machine.get_y_out(y_i))
 
         for x_i, y_i, machine in zip(reversed(xs), reversed(ys), reversed(self.machines)):
@@ -308,6 +305,7 @@ class Processor(ABC):
     def get_y_out(self, ys):
         pass
 
+
 class TH2NP(Processor):
 
     def update_ys(self, x):
@@ -322,6 +320,7 @@ class TH2NP(Processor):
 
     def get_y_out(self, ys):
         return ys
+
 
 class NP2TH(Processor):
 
@@ -350,7 +349,7 @@ class CompositeProcessor(Processor):
         self.processors = processors
 
     def update_ys(self, x):
-        ys = []
+        ys = [x]
         y = x
         for processor in self.processors:
             y, ys_i = processor.update_ys(y)
@@ -368,13 +367,15 @@ class CompositeProcessor(Processor):
         if ys is None:
             _, ys = self.update_ys(x)
         
-        xs = [x] + ys[:-1]
+        xs = ys[:-1]
         for x_i, y_i, processor in zip(
-            reversed(xs), reversed(ys[:-1]), reversed(self.processors)):
+            reversed(xs), reversed(ys[1:-1]), reversed(self.processors)):
             t = processor.backward(x_i, t, y_i)
         return t
 
     def get_y_out(self, ys):
+        if len(self.processors) == 0:
+            return ys[0]
         return self.processors[-1].get_y_out(ys[-1])
 
 
@@ -388,11 +389,14 @@ class Processed(Machine):
         self.machine = machine
     
     def assess(self, x, t, ys=None):
-        if y is None:
-            y = self.forward(x)
-        else:
-            y = self.machine.get_y_out(ys[1])
-        return self.machine.assess(y, t)
+        if not ys:
+            y, ys = self.update_ys(x)
+        # if ys is None:
+        #     y = self.forward(x)
+        # else:
+        #     y = self.machine.get_y_out(ys[1])
+        y = self.processors.get_y_out(ys[0])
+        return self.machine.assess(y, t, ys[1])
     
     def update_ys(self, x):
         y, ys_i = self.processors.update_ys(x)
