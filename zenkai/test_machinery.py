@@ -55,6 +55,7 @@ class TestProcessed:
         loss = nn.MSELoss()
         machine = mac.TorchNN(layer, optim, loss)
         processed = mac.Processed(processors, machine)
+
         return processed, layer, loss
 
     def test_processed_with_no_processor(self):

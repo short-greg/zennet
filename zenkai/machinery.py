@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractclassmethod, abstractmethod
 from audioop import reverse
-from functools import singledispatchmethod
+from functools import partial, singledispatchmethod
 import typing
 import sklearn
 import torch as th
@@ -12,11 +12,105 @@ from abc import ABC, abstractproperty
 from dataclasses import dataclass
 import torch as th
 import numpy as np
-import torch
+import torch.nn.utils as nn_utils
+from copy import deepcopy
+
 
 torch_id = "torch"
 numpy_id = "numpy"
 null_id = "null"
+
+
+class Func(ABC):
+
+    @abstractmethod
+    def __call__(self, x):
+        pass
+
+
+class NNParamFunc(Func):
+
+    def __init__(self, nn_module: nn.Module):
+
+        self.nn_module = nn_module
+        self.x = None
+
+    def __call__(self, x):
+        
+        ys = []
+        for p_i in x[0]:
+            nn_utils.vector_to_parameters(p_i, self.nn_module.parameters())
+            ys.append(self.nn_module(self.x))
+        return th.stack(ys)
+
+
+class NNFunc(Func):
+
+    def __init__(self, nn_module: nn.Module):
+        self.nn_module = nn_module
+    
+    def __call__(self, x):
+
+        n, b = x.size(0), x.size(1)
+        x = x.view(n * b, *x.size()[2:])
+        y = self.nn_module(x)
+        return x.view(n, b, *y.size()[1:])
+
+
+class Reduction(ABC):
+    
+    @abstractmethod
+    def __call__(self, evaluation):
+        raise NotImplementedError
+
+
+class MeanReduction(ABC):
+    
+    def __call__(self, grade):
+        
+        return grade.view(grade.size(0), -1).mean(dim=1)
+
+
+class Objective(nn.Module):
+
+    def __init__(self, reduction):
+        super().__init__()
+        self.reduction = reduction
+    
+    def minimize(self) -> bool:
+        return not self.maximize
+
+    @abstractproperty
+    def maximize(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def eval(self, x, t):
+        raise NotImplementedError
+
+    def reduce(self, grade):
+        return self.reduction(grade)
+
+    def forward(self, x, t):
+        t = t.unsqueeze(0)
+        evaluation = self.eval(x, t)
+        return self.reduction(evaluation)
+
+
+class LossObjective(nn.Module):
+
+    def __init__(self, th_loss):
+        super().__init__()
+        loss = deepcopy(th_loss)
+        loss.reduction = 'none'
+        self.loss = loss
+
+    @property
+    def maximize(self) -> bool:
+        return False
+
+    def eval(self, x, t):
+        return self.loss(x, t)
 
 
 class DType(object):
@@ -136,13 +230,275 @@ class Machine(ABC):
         return self.backward(x, t, ys, False) 
 
 
+class Preparer(ABC):
+
+    def __init__(self):
+        self._x = None
+    
+    @abstractproperty
+    def prepare_in(self):
+        pass
+
+    @abstractproperty
+    def prepare_out(self):
+        pass
+
+    @property
+    def x(self):
+
+        return self._x
+
+    @abstractmethod
+    def prepare(self, x_seed):
+        pass
+
+    @abstractmethod
+    def prepare_init(self, x_seed):
+        pass
+
+
+class PrepareGuassianNoise(Preparer):
+
+    def __init__(self, r, k):
+        self.r = r
+        self.k = k
+
+    def prepare(self, x):
+        self._x = x + th.randn(self.k, *x.size()) * self.r
+        return self._x
+
+    def prepare_init(self, x):
+        self._x = x + th.randn(self.k, *x.size()) * self.r
+        return self._x
+
+
+class Updater(ABC):
+
+    def __init__(self, k: int):
+        self._best = None
+        self._x = None
+        self.k = k
+    
+    @property
+    def best(self):
+        return self._best
+
+    @abstractproperty
+    def update_out(self):
+        pass
+
+    @abstractproperty
+    def update_in(self):
+        pass
+
+    @property
+    def x(self):
+        return self._x
+    
+    @abstractmethod
+    def step(self, x, fitness):
+        pass
+
+
+class MaxUpdater(Updater):
+
+    def step(self, x: th.Tensor, fitness: th.Tensor):
+        x_best = x[fitness.argmax()]
+        self._best = x_best
+        self._x = x
+
+    @property
+    def update_out(self):
+        None
+
+    @property
+    def update_in(self):
+        self.k
+
+
+class Optimizer(ABC):
+
+    def __init__(self, name: str, f: Func, objective: Objective, preparer: Preparer, updater: Updater, x_seed=None):
+
+        self.name = name
+        self.objective = objective
+        self.f = f
+        self.x_seed = x_seed
+        self.best = None
+        self.preparer = preparer
+        self.updater = updater
+        self.y = None
+
+    def update(self, t):
+    
+        if not self.y:
+            x = self.preparer.prepare_init(self.x_seed)
+        else:
+            x = self.preparer.prepare(self.y)
+        fitness = self.objective(self.f(x), t)
+        self.updater(x, fitness)
+        self.y = self.updater.x
+        return self.y
+
+    def update_k(self, t, x_seed=None, k: int=1):
+        
+        x = x_seed
+        for _ in range(k):
+            self.update(t, x)
+            x = self.updater.x
+        return self.best
+
+
+
+class Backward(ABC):
+
+    @abstractmethod
+    def __call__(self, x, t, ys, update: bool=True):
+        pass
+
+
+class OptimBackward(Backward):
+
+    def __init__(self, module: nn.Module, loss, optim_f, input_updater):
+        self._module = module
+        self._loss = loss
+        self._optim = optim_f(module.parameters())
+        self._input_updater = input_updater
+    
+    def __call__(self, x: th.Tensor, t: th.Tensor, ys, update: bool=True):
+        if ys is None:
+            x = x.detach()
+            y = self._module.forward(x)
+        else:
+            y = ys[1]
+            x = ys[0]
+
+        self._optim.zero_grad()
+        result = self._loss(y, t)
+        result.backward()
+        if update:
+            self._optim.step()
+        return self._input_updater(x, x.grad)
+
+
+# TODO* This does not actually need to be torch
+class ObjectiveBackward(Backward):
+
+    def __init__(self, module: nn.Module, loss: nn.Module, x_optim: Optimizer, p_optim: Optimizer):
+
+        self._module = module
+        self._loss = loss
+        self._x_optim = x_optim
+        self._p_optim = p_optim
+
+    def __call__(self, x, t, ys=None, update: bool=True):
+
+        if update:
+            self._p_optim.x = x
+            self._p_optim.update(t)
+            self._module = self._p_optim.best
+        self._x_optim.f = NNFunc(self._module)
+        self._x_optim.update(t, x)
+        return self._x_optim.best
+
+
+class BackwardBuilder(ABC):
+
+    @abstractmethod
+    def produce(self, module, loss) -> Backward:
+        pass
+
+
+class OptimBuilder(BackwardBuilder):
+
+    def __init__(self, optim_f):
+        self._optim_f = optim_f
+        self._input_updater = None
+        self.std_update()
+    
+    def std_update(self):
+        def update(x, x_grad):
+            return x - x_grad
+        self._input_updater = update
+        return self
+
+    def clamp_update(self, lower=0.0, upper=1.0):
+        def update(x, x_grad):
+            x = x - x_grad
+            return th.clamp(x, min=lower, max=upper).detach()
+        self._input_updater = update
+        return self
+
+    def produce(self, module, loss) -> Backward:
+
+        return OptimBackward(module, loss, self._optim_f, input_updater=self._input_updater)
+
+
+class ObjectiveBuilder(BackwardBuilder):
+
+    def __init__(self, x_size):
+        self._k = 1
+        self._x_size = x_size
+        self._x_updater_name = None
+        self._p_updater_name = None
+
+    def set_p_hill_climbing(self):
+
+        self._p_updater_name = 'HillClimber'
+        self._p_preparer = PrepareGuassianNoise(0.2, self._k)
+        self._p_updater = MaxUpdater(self._k)
+        return self
+
+    def set_x_hill_climbing(self, k: int=4):
+        self._x_updater_name = 'HillClimber'
+        self._k = k
+        self._x_preparer = PrepareGuassianNoise(0.2, k)
+        self._p_preparer.k = k
+        self._p_updater.k = k
+        self._x_updater = MaxUpdater(k)
+        return self
+
+    def reset(self):
+        raise NotImplementedError
+
+    def produce(self, module, objective_f, is_loss) -> Backward:
+
+        objective = LossObjective(objective_f)
+        x_f = NNFunc(module)
+        p_f = NNParamFunc(module)
+        
+        p_init = nn_utils.parameters_to_vector(module.parameters())
+
+        x_optimizer = Optimizer(
+            self._x_updater_name,
+            x_f, self._objective, 
+            self._x_preparer, self._x_updater, th.zeros(*self.x_size)
+        )
+        p_optimizer = Optimizer(
+            self._p_updater_name,
+            p_f, self._objective, 
+            self._p_preparer, self._p_updater, p_init
+        )
+        return ObjectiveBackward(module, objective, x_optimizer, p_optimizer)
+
+
+# class EvolutionaryStrategy(OptimizerBuilder):
+    
+#     @abstractmethod
+#     def reset(self):
+#         raise NotImplementedError
+
+#     @abstractproperty
+#     def product(self) -> Optimizer:
+#         pass
+
 class TorchNN(Machine):
 
-    def __init__(self, module: nn.Module, optim_f, loss: nn.Module):
+    def __init__(self, module: nn.Module, loss: nn.Module, backward: BackwardBuilder):
         
         self._module = module
-        self._optim = optim_f(module.parameters())
         self._loss = loss
+        self._backward = backward.produce(module, loss)
 
     def assess(self, x, t, ys=None):
         if ys is None:
@@ -166,45 +522,11 @@ class TorchNN(Machine):
         return self._module.forward(x)
 
     def backward(self, x, t, ys=None, update: bool=True):
+        return self._backward(x, t, ys, update)
 
-        if ys is None:
-            x = x.detach()
-            y = self.forward(x)
-        else:
-            y = ys[1]
-            x = ys[0]
-        self._optim.zero_grad()
-        result = self._loss(y, t)
-        result.backward()
-        if update:
-            self._optim.step()
-        updated = x.grad
-        return x - updated
-    
     @property
     def module(self):
         return self._module
-
-
-class TorchNNBackwardMixin(object):
-
-    def __init__(self, *args, **kwargs):
-        TorchNN.__init__(self, *args, **kwargs)
-    
-    @abstractmethod
-    def backward(self, x, t, ys=None, update: bool=True):
-        raise NotImplementedError
-
-
-class ClassBackwardMixin(TorchNNBackwardMixin):
-
-    def backward(self, x, t, ys=None, update: bool=True):
-        x_prime = TorchNN.backward(self, x, t, ys, update)
-        return torch.clamp(x_prime, 0.0, 1.0).detach()
-
-
-class TorchClassNN(ClassBackwardMixin, TorchNN):
-    pass
 
 
 class SklearnMachine(Machine):
@@ -254,8 +576,6 @@ class Sequence(Machine):
             raise ValueError(f'Length of sequence must be greater than 0')
         self.machines = machines
     
-    # maybe i need to pass in all ys
-    # cause this is not optimized
     def assess(self, x, t, ys=None):
         if ys is None:
             _, ys = self.update_ys(x)
@@ -331,7 +651,7 @@ class TH2NP(Processor):
 
 class NP2TH(Processor):
 
-    def __init__(self, dtype: torch.dtype=torch.float32):
+    def __init__(self, dtype: th.dtype=th.float32):
         self.dtype = dtype
 
     def update_ys(self, x):
@@ -429,7 +749,7 @@ class Processed(Machine):
 
 class WeightedLoss(nn.Module):
     
-    def __init__(self, nn_loss: torch.nn.Module, weight: float):
+    def __init__(self, nn_loss: nn.Module, weight: float):
 
         super().__init__()
         self.nn_loss = nn_loss
@@ -482,13 +802,60 @@ class WeightedLoss(nn.Module):
 # builder.add_numpy_layer()
 
 # allow this this for optimization
-class LearnF(object):
 
-    def target(x):
-        pass
+# class LearnF(object):
 
-    def eval(x):
-        pass
+#     def target(x):
+#         pass
+
+#     def eval(x):
+#         pass
 
 
 # need a way to "prepend the LearnF"
+
+
+# class HillDescendingBackwardMixin(TorchNNBackwardMixin):
+
+#     def backward(self, x, t, ys=None, update: bool=True):
+#         if update:
+#             TorchNN.backward(self, x, t, ys, update)
+        
+        # 1) x_samples = sample(x, count)
+        # 2) result = eval(x_samples.batch_flatten(), agg=False) <- need a way to make eval not aggregate
+        # 3) x_prime = select(x_samples, result.deflatten())
+        # return x_prime
+
+# if you want to use decision tree
+# probably need to have a mixture of experts
+# randomly choose what expert to update for each 
+# sample... 
+#
+# output = 1 2 1 2 2 2
+# update = 0 0 0 0 0 1 <- some small probability of updating
+# otherwise the changes will be too great
+# 
+
+
+
+# class ObjectiveBuilder(BackwardBuilder):
+
+#     def __init__(self, x_optim: Optimizer, p_optim: Optimizer):
+#         self._x_optim = x_optim
+#         self._p_optim = p_optim
+
+#     def produce(self, module, loss) -> Backward:
+#         return ObjectiveBackward(module, loss)
+
+
+# class OptimizerBuilder(object):
+    
+#     @abstractmethod
+#     def reset(self):
+#         raise NotImplementedError
+    
+#     @abstractproperty
+#     def product(self) -> Optimizer:
+#         raise NotImplementedError
+
+
