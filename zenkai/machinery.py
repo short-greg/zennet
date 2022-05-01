@@ -46,8 +46,8 @@ class NNParamFunc(Func):
             ys.append(self.nn_module(self.x))
         return th.stack(ys)
 
-    def reset(self, p):
-        self.x = p
+    def reset_theta(self, theta):
+        self.x = theta
 
 
 class NNFunc(Func):
@@ -62,8 +62,8 @@ class NNFunc(Func):
         y = self.nn_module(x)
         return x.view(n, b, *y.size()[1:])
 
-    def reset(self, p):
-        nn_utils.vector_to_parameters(p, self.nn_module.parameters())
+    def reset(self, theta):
+        nn_utils.vector_to_parameters(theta, self.nn_module.parameters())
 
 
 class Reduction(ABC):
@@ -244,97 +244,6 @@ class Machine(ABC):
         return self.backward(x, t, ys, False) 
 
 
-class Preparer(ABC):
-
-    def __init__(self):
-        self._x = None
-    
-    @abstractproperty
-    def prepare_in(self):
-        pass
-
-    @abstractproperty
-    def prepare_out(self):
-        pass
-
-    @property
-    def x(self):
-
-        return self._x
-
-    @abstractmethod
-    def prepare(self, x_seed):
-        pass
-
-    @abstractmethod
-    def prepare_init(self, x_seed):
-        pass
-
-
-
-
-
-
-
-class PrepareGuassianNoise(Preparer):
-
-    def __init__(self, r, k):
-        self.r = r
-        self.k = k
-
-    def prepare(self, x):
-        self._x = x + th.randn(self.k, *x.size()) * self.r
-        return self._x
-
-    def prepare_init(self, x):
-        self._x = x + th.randn(self.k, *x.size()) * self.r
-        return self._x
-
-
-class Updater(ABC):
-
-    def __init__(self, k: int):
-        self._best = None
-        self._x = None
-        self.k = k
-    
-    @property
-    def best(self):
-        return self._best
-
-    @abstractproperty
-    def update_out(self):
-        pass
-
-    @abstractproperty
-    def update_in(self):
-        pass
-
-    @property
-    def x(self):
-        return self._x
-    
-    @abstractmethod
-    def step(self, x, fitness):
-        pass
-
-
-class MaxUpdater(Updater):
-
-    def step(self, x: th.Tensor, fitness: th.Tensor):
-        x_best = x[fitness.argmax()]
-        self._best = x_best
-        self._x = x
-
-    @property
-    def update_out(self):
-        None
-
-    @property
-    def update_in(self):
-        self.k
-
-
 class Optimizer(ABC):
 
     def __init__(self, f: Func, objective: Objective):
@@ -342,15 +251,15 @@ class Optimizer(ABC):
         self._objective = objective
 
     @abstractmethod
-    def initialize(self, x):
+    def reset_fixed(self, fixed):
         pass
     
     @abstractmethod
-    def update(self, t, x=None):
+    def update_theta(self, t, fixed=None):
         pass
 
     @abstractmethod
-    def reset(self, p=None):
+    def reset_theta(self, theta):
         pass
 
     @abstractproperty
@@ -369,21 +278,22 @@ class PGradOptimizer(Optimizer):
         self._optim: th.optim.Optimizer = optim(f.best_parameters())
         self._evaluation = None
 
-    def initialize(self, p):
-        self._p = p
+    def reset_theta(self, theta=None):
+        self._theta = theta
+
+    def reset_fixed(self, fixed):
+        self._fixed = fixed
         self._evaluation = None
 
-    def update(self, t, x=None):
-        if x is not None:
-            self.reset(x)
+    def update_theta(self, t, fixed=None, y=None):
+        if fixed is not None:
+            self.reset_fixed(fixed)
     
         self._optim.zero_grad()
-        self._evaluation = self._objective(self._f(self._x), t)
+        y = self._f(self._fixed) if y is None else y
+        self._evaluation = self._objective(y, t)
         self._evaluation.mean().backward()
         self._optim.step()
-
-    def reset(self, p=None):
-        self._x = p
 
     @property
     def best(self):
@@ -396,24 +306,30 @@ class PGradOptimizer(Optimizer):
 
 class XGradOptimizer(Optimizer):
 
-    def __init__(self, f: NNFunc, objective: Objective, optim):
+    def __init__(self, f: NNFunc, objective: Objective):
         super().__init__(f, objective)
         self._evaluation = None
 
-    def initialize(self, x):
-        self._x = x
+    def reset_theta(self, theta=None):
+        self._f.reset(theta)
+
+    def reset_fixed(self, fixed):
+        self._fixed = fixed
         self._evaluation = None
 
-    def update(self, t, x=None):
+    def update_theta(self, t, fixed=None, y=None):
 
-        grad_set = x is not None and x.grad is not None
-        x = self._x if x is None else x
+        grad_set = self._theta is not None and self._theta.grad is not None
+        if fixed is not None:
+            self.reset_fixed(fixed)
+
+        y = self._f(self._theta) if y is None else y
         if not grad_set:
-            self._evaluation = self._objective(self._f(x), t)
+            self._evaluation = self._objective(y, t)
             self._evaluation.mean().backward()
         else:
             self._evaluation = None
-        self._x = x - x.grad
+        self._theta = self._theta - self._theta.grad
 
     @property
     def best(self):
@@ -423,9 +339,6 @@ class XGradOptimizer(Optimizer):
     def evaluations(self):
         return [self._evaluation]
 
-    def reset(self, p=None):
-        self._f.reset(p)
-    
 
 class HillClimberF(ABC):
 
@@ -435,7 +348,7 @@ class HillClimberF(ABC):
 
 class GaussianHillClimberF(HillClimberF):
 
-    def __init__(self, s: float, k: int):
+    def __init__(self, s: float=1e-2, k: int=1):
         self.s = s
         self.k = k
 
@@ -453,23 +366,29 @@ class HillClimberOptimizer(Optimizer):
         self.perturber = perturber
         self._diff = None
 
-    def initialize(self, x):
-        self._x = x
+    def reset_theta(self, theta=None):
+        self._theta = theta
+
+    def reset_fixed(self, fixed):
+        
+        self._f.reset_fixed(fixed)
+        self._fixed = fixed
         self._evaluation = None
         self._diff = None
     
-    def update(self, t, x=None):
+    def update_theta(self, t, fixed=None):
 
-        if x is None: self.initialize(x)
+        if fixed is not None:
+            self.reset_fixed(fixed)
         
-        x = self.perturber(self._x)
-        self._evaluations = self._objective(self._f(x), t)
-        best =  self._objective.best(self._evaluations, x)
+        theta = self.perturber(self._theta)
+        self._evaluations = self._objective(self._f(theta), t)
+        best =  self._objective.best(self._evaluations, theta)
         if self._diff is not None and self._momentum is not None:
-            self._diff = (1 - self._momentum) * (best - x) + self._momentum * self._diff
+            self._diff = (1 - self._momentum) * (best - theta) + self._momentum * self._diff
             self._x = self._x + self._diff
         elif self._momentum is not None:
-            self._diff = (best - x)
+            self._diff = (best - theta)
             self._x = self._x + self._diff
         else:
             self._x = best
@@ -477,8 +396,6 @@ class HillClimberOptimizer(Optimizer):
         self._true_best = best
         return self._evaluations
 
-    def reset(self, p=None):
-        self._f.reset(p)
 
     @property
     def best(self):
@@ -488,17 +405,6 @@ class HillClimberOptimizer(Optimizer):
     def evaluations(self):
         return self._evaluations
 
-
-
-# class EvolutionaryStrategy(OptimizerBuilder):
-    
-#     @abstractmethod
-#     def reset(self):
-#         raise NotImplementedError
-
-#     @abstractproperty
-#     def product(self) -> Optimizer:
-#         pass
 
 class TorchNN(Machine):
 
@@ -539,12 +445,12 @@ class TorchNN(Machine):
             y  = None
 
         if update:
-            self._p_updater.reset(p=x)
-            self._p_updater.update(t, y=y)
-            self._x_updater.reset(self._p_updater.best)
+            # self._p_updater.reset_fixed(x)
+            self._p_updater.update_theta(t, x=x, y=y)
+            self._x_updater.reset_fixed(self._p_updater.best)
         
-        self._x_updater.initialize(x)
-        self._x_updater.update(t, y=y)
+        self._x_updater.reset_theta(x)
+        self._x_updater.update_theta(t, y=y)
         return self._x_updater.best
 
     @property
@@ -1075,3 +981,91 @@ class WeightedLoss(nn.Module):
 #             self._p_preparer, self._p_updater, p_init
 #         )
 #         return ObjectiveBackward(module, objective, x_optimizer, p_optimizer)
+
+
+
+# class Preparer(ABC):
+
+#     def __init__(self):
+#         self._x = None
+    
+#     @abstractproperty
+#     def prepare_in(self):
+#         pass
+
+#     @abstractproperty
+#     def prepare_out(self):
+#         pass
+
+#     @property
+#     def x(self):
+
+#         return self._x
+
+#     @abstractmethod
+#     def prepare(self, x_seed):
+#         pass
+
+#     @abstractmethod
+#     def prepare_init(self, x_seed):
+#         pass
+
+
+# class PrepareGuassianNoise(Preparer):
+
+#     def __init__(self, r, k):
+#         self.r = r
+#         self.k = k
+
+#     def prepare(self, x):
+#         self._x = x + th.randn(self.k, *x.size()) * self.r
+#         return self._x
+
+#     def prepare_init(self, x):
+#         self._x = x + th.randn(self.k, *x.size()) * self.r
+#         return self._x
+
+
+# class Updater(ABC):
+
+#     def __init__(self, k: int):
+#         self._best = None
+#         self._x = None
+#         self.k = k
+    
+#     @property
+#     def best(self):
+#         return self._best
+
+#     @abstractproperty
+#     def update_out(self):
+#         pass
+
+#     @abstractproperty
+#     def update_in(self):
+#         pass
+
+#     @property
+#     def x(self):
+#         return self._x
+    
+#     @abstractmethod
+#     def step(self, x, fitness):
+#         pass
+
+
+# class MaxUpdater(Updater):
+
+#     def step(self, x: th.Tensor, fitness: th.Tensor):
+#         x_best = x[fitness.argmax()]
+#         self._best = x_best
+#         self._x = x
+
+#     @property
+#     def update_out(self):
+#         None
+
+#     @property
+#     def update_in(self):
+#         self.k
+
