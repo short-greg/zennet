@@ -16,54 +16,11 @@ import torch.nn.utils as nn_utils
 from copy import deepcopy
 
 
+
 torch_id = "torch"
 numpy_id = "numpy"
 null_id = "null"
 
-
-class Func(ABC):
-
-    @abstractmethod
-    def __call__(self, x):
-        pass
-
-    @abstractmethod
-    def reset(self, p):
-        pass
-
-class NNParamFunc(Func):
-
-    def __init__(self, nn_module: nn.Module):
-
-        self.nn_module = nn_module
-        self.x = None
-
-    def __call__(self, x):
-        
-        ys = []
-        for p_i in x[0]:
-            nn_utils.vector_to_parameters(p_i, self.nn_module.parameters())
-            ys.append(self.nn_module(self.x))
-        return th.stack(ys)
-
-    def reset_theta(self, theta):
-        self.x = theta
-
-
-class NNFunc(Func):
-
-    def __init__(self, nn_module: nn.Module):
-        self.nn_module = nn_module
-    
-    def __call__(self, x):
-
-        n, b = x.size(0), x.size(1)
-        x = x.view(n * b, *x.size()[2:])
-        y = self.nn_module(x)
-        return x.view(n, b, *y.size()[1:])
-
-    def reset(self, theta):
-        nn_utils.vector_to_parameters(theta, self.nn_module.parameters())
 
 
 class Reduction(ABC):
@@ -99,11 +56,19 @@ class Objective(nn.Module):
 
     def reduce(self, grade):
         return self.reduction(grade)
+    
+    def forward_multi(self, x, t):
+        t = t[None].repeat(x.size(0), *[1] * len(t.size()))
+        evaluation = self.eval(x, t)
+        reduced = self.reduction(evaluation)
+        return reduced
 
     def forward(self, x, t):
+        x = x.unsqueeze(0)
         t = t.unsqueeze(0)
         evaluation = self.eval(x, t)
-        return self.reduction(evaluation)
+        reduced = self.reduction(evaluation)
+        return reduced.view([])
     
     def best(self, evaluations, x):
         if self.maximize:
@@ -111,11 +76,11 @@ class Objective(nn.Module):
         return x[th.argmin(evaluations)]
 
 
-class LossObjective(nn.Module):
+class LossObjective(Objective):
 
-    def __init__(self, th_loss):
-        super().__init__()
-        loss = deepcopy(th_loss)
+    def __init__(self, th_loss, reduction: Reduction):
+        super().__init__(reduction)
+        loss = th_loss(reduction="none")
         loss.reduction = 'none'
         self.loss = loss
 
@@ -125,7 +90,7 @@ class LossObjective(nn.Module):
 
     def eval(self, x, t):
         return self.loss(x, t)
-
+    
 
 class DType(object):
 
@@ -241,29 +206,35 @@ class Machine(ABC):
         self.backward(x, t, ys, True)    
         
     def update_x(self, x, t, ys=None):
+
+        print('---: ', x)
         return self.backward(x, t, ys, False) 
 
 
 class Optimizer(ABC):
 
-    def __init__(self, f: Func, objective: Objective):
-        self._f = f
-        self._objective = objective
-
-    @abstractmethod
-    def reset_fixed(self, fixed):
-        pass
-    
-    @abstractmethod
-    def update_theta(self, t, fixed=None):
-        pass
-
-    @abstractmethod
-    def reset_theta(self, theta):
+    @abstractproperty
+    def reset_inputs(self, inputs):
         pass
 
     @abstractproperty
-    def best(self):
+    def reset_theta(self, theta):
+        pass
+
+    @abstractmethod
+    def update_theta(self, t, inputs=None, theta=None, y=None):
+        pass
+    
+    @abstractmethod
+    def update_inputs(self):
+        pass
+
+    @abstractproperty
+    def inputs(self):
+        pass
+    
+    @abstractproperty
+    def theta(self):
         pass
 
     @abstractproperty
@@ -271,73 +242,124 @@ class Optimizer(ABC):
         pass
 
 
-class PGradOptimizer(Optimizer):
+class TorchOptimizer(Optimizer):
 
-    def __init__(self, f: NNParamFunc, objective: Objective, optim):
-        super().__init__(f, objective)
-        self._optim: th.optim.Optimizer = optim(f.best_parameters())
+    def __init__(self, net: nn.Module, objective: Objective):
+        super().__init__()
+        self._objective = objective
+        self._net = net
+
+
+class GradOptimizer(TorchOptimizer):
+
+    def __init__(self, net: nn.Module, objective: Objective, optim):
+        super().__init__(net, objective)
+        self._net = net
+        self._optim: th.optim.Optimizer = optim(self._net.parameters())
         self._evaluation = None
 
     def reset_theta(self, theta=None):
         self._theta = theta
-
-    def reset_fixed(self, fixed):
-        self._fixed = fixed
+        nn_utils.vector_to_parameters(theta, self._net.parameters())
         self._evaluation = None
 
-    def update_theta(self, t, fixed=None, y=None):
-        if fixed is not None:
-            self.reset_fixed(fixed)
-    
+    def reset_inputs(self, inputs):
+        
+        self._inputs = inputs
+        self._evaluation = None
+
+    def update_theta(self, t, inputs=None, theta=None, y=None):
+        if inputs is not None:
+            self.reset_inputs(inputs)
+        if theta is not None:
+            self.reset_theta(theta)
         self._optim.zero_grad()
-        y = self._f(self._fixed) if y is None else y
+        if y is None:
+            y = self._net(self._inputs)
         self._evaluation = self._objective(y, t)
         self._evaluation.mean().backward()
         self._optim.step()
 
+    def update_inputs(self, t, inputs: th.Tensor=None, theta=None, y=None):
+        print(inputs)
+        if inputs is not None:
+            self.reset_inputs(inputs)
+        if theta is not None:
+            self.reset_theta(theta)
+        print(self._inputs)
+        
+        if y is None:
+            y = self._net(self._inputs)
+        self._evaluation = self._objective(y, t)
+        self._evaluation.sum().backward()
+        if self._inputs.grad is None:
+            raise RuntimeError("Input is not a leaf node or does not retain grad")
+        self._inputs = self._inputs - self._inputs.grad
+
     @property
-    def best(self):
-        return self._f.best
+    def inputs(self):
+        return self._inputs
+    
+    @property
+    def theta(self):
+        return nn.utils.parameters_to_vector(self._net.parameters())
     
     @property
     def evaluations(self):
         return [self._evaluation]
-    
 
-class XGradOptimizer(Optimizer):
 
-    def __init__(self, f: NNFunc, objective: Objective):
-        super().__init__(f, objective)
-        self._evaluation = None
+class XPOptimizer(Optimizer):
+
+    def __init__(self, x_updater: Optimizer, p_updater: Optimizer):
+        super().__init__()
+        self._x_updater: Optimizer = x_updater
+        self._p_updater: Optimizer = p_updater
+        self._updated_inputs = False
+        self._updated_theta = False
 
     def reset_theta(self, theta=None):
-        self._f.reset(theta)
+        self._x_updater.reset_theta(theta)
+        self._p_updater.reset_theta(theta)
 
-    def reset_fixed(self, fixed):
-        self._fixed = fixed
-        self._evaluation = None
+    def reset_inputs(self, inputs):
+        self._x_updater.reset_inputs(inputs)
+        self._p_updater.reset_inputs(inputs)
 
-    def update_theta(self, t, fixed=None, y=None):
+    def update_theta(self, t, inputs=None, theta=None, y=None):
+        if inputs is not None:
+            self._x_updater.reset_inputs(inputs)
+        if theta is not None:
+            self._x_updater.reset_theta(theta)
+        self._p_updater.update_theta(t, theta=theta, inputs=inputs, y=y)
+        self._x_updater.reset_theta(self._p_updater.theta)
+        self._updated_inputs = False
+        self._updated_theta = True
 
-        grad_set = self._theta is not None and self._theta.grad is not None
-        if fixed is not None:
-            self.reset_fixed(fixed)
-
-        y = self._f(self._theta) if y is None else y
-        if not grad_set:
-            self._evaluation = self._objective(y, t)
-            self._evaluation.mean().backward()
-        else:
-            self._evaluation = None
-        self._theta = self._theta - self._theta.grad
+    def update_inputs(self, t, inputs: th.Tensor=None, theta=None, y=None):
+        if inputs is not None:
+            self._p_updater.reset_inputs(inputs)
+        if theta is not None:
+            self._p_updater.reset_theta(theta)
+        self._x_updater.update_inputs(t, theta=theta, inputs=inputs, y=y)
+        self._p_updater.reset_inputs(self._x_updater.inputs)
+        self._updated_inputs = True
+        self._updated_theta = False
 
     @property
-    def best(self):
-        return self._best
+    def inputs(self):
+        return self._x_updater.inputs
+    
+    @property
+    def theta(self):
+        return self._p_updater.theta
     
     @property
     def evaluations(self):
-        return [self._evaluation]
+        if self._updated_inputs:
+            return self._x_updater.evaluations
+        if self._updated_theta:
+            return self._p_updater.evaluations
 
 
 class HillClimberF(ABC):
@@ -353,105 +375,183 @@ class GaussianHillClimberF(HillClimberF):
         self.k = k
 
     def __call__(self, x: th.Tensor):
-        x = x.unsqueeze(0)
         y = th.randn(self.k, *x.size()) * self.s + x
+        x = x.unsqueeze(0)
         return th.cat([x, y])
 
 
-class HillClimberOptimizer(Optimizer):
+class HillClimberOptimizer(TorchOptimizer):
 
-    def __init__(self, f: Func, objective: Objective, momentum: float, perturber: HillClimberF):
-        super().__init__(f, objective)
+    def __init__(self, net: nn.Module, objective: Objective, momentum: float, perturber="gaussian", theta=None):
+        super().__init__(net, objective)
         self._momentum = momentum
-        self.perturber = perturber
-        self._diff = None
-
-    def reset_theta(self, theta=None):
+        if perturber == "gaussian":
+            self.perturber = GaussianHillClimberF()
+        else:
+            self.perturber = perturber
+        self._inputs_diff = None
+        self._theta_diff = None
+        self._x = None
         self._theta = theta
 
-    def reset_fixed(self, fixed):
-        
-        self._f.reset_fixed(fixed)
-        self._fixed = fixed
+    def reset_inputs(self, inputs):
+        self._inputs = inputs
         self._evaluation = None
         self._diff = None
-    
-    def update_theta(self, t, fixed=None):
 
-        if fixed is not None:
-            self.reset_fixed(fixed)
+    def reset_theta(self, theta):
+        self._theta = theta
+        nn_utils.vector_to_parameters(theta, self._net.parameters())
+        self._evaluation = None
+        self._theta_diff = None
+
+    def update_theta(self, t, inputs=None, theta=None, y=None):
+        if inputs is not None:
+            self.reset_inputs(inputs)
+        if theta is not None:
+            self.reset_theta(theta)
         
         theta = self.perturber(self._theta)
-        self._evaluations = self._objective(self._f(theta), t)
-        best =  self._objective.best(self._evaluations, theta)
+        evaluations = []
+        for theta_i in theta:
+            nn_utils.vector_to_parameters(theta_i, self._net.parameters())
+            evaluations.append(self._objective.forward(self._net(self._inputs), t))
+        evaluations = th.stack(evaluations)
+        best = self._objective.best(evaluations, theta)
         if self._diff is not None and self._momentum is not None:
-            self._diff = (1 - self._momentum) * (best - theta) + self._momentum * self._diff
-            self._x = self._x + self._diff
+            self._diff = (1 - self._momentum) * (best - self._theta) + self._momentum * self._diff
+            self._theta = self._theta + self._diff
         elif self._momentum is not None:
-            self._diff = (best - theta)
-            self._x = self._x + self._diff
+            self._diff = (best - self._theta)
+            self._theta = self._theta + self._diff
         else:
-            self._x = best
+            self._theta = best
         
-        self._true_best = best
-        return self._evaluations
+        self._evaluations = evaluations
+    
+    def update_inputs(self, t, inputs=None, theta=None, y=None):
 
+        if inputs is not None:
+            self.reset_inputs(inputs)
+        if theta is not None:
+            self.reset_theta(theta)
+        
+        inputs = self.perturber(self._inputs)
+        evaluations = self._objective.forward_multi(self._net(inputs), t)
+        best = self._objective.best(evaluations, inputs)
+        if self._diff is not None and self._momentum is not None:
+            self._diff = (1 - self._momentum) * (best - self._inputs) + self._momentum * self._diff
+            self._inputs = self._inputs + self._diff
+        elif self._momentum is not None:
+            self._diff = (best - self._inputs)
+            self._inputs = self._inputs + self._diff
+        else:
+            self._theta = best
+        
+        self._evaluations = evaluations
 
     @property
-    def best(self):
-        return self._x
+    def inputs(self):
+        return self._inputs
     
+    @property
+    def theta(self):
+        return nn_utils.parameters_to_vector(self._net.parameters())
+
     @property
     def evaluations(self):
         return self._evaluations
 
 
+class THOptimBuilder(ABC):
+
+    def __init__(self):
+        
+        self._optim = None
+        self.grad()
+
+    def grad(self, optim_cls=None, **kwargs):
+
+        if optim_cls is None:
+            optim_cls = th.optim.Adam
+
+        self._optim = partial(
+            GradOptimizer,
+            optim=partial(optim_cls, **kwargs)
+        )
+        return self
+    
+    def hill_climber(self, momentum=0.5, perturber=None):
+
+        if perturber is None:
+            perturber = GaussianHillClimberF()
+        self._optim = partial(HillClimberOptimizer, momentum=momentum, perturber=perturber)
+        return self
+
+    def __call__(self, net, loss):
+        return self._optim(net, loss)
+
+
 class TorchNN(Machine):
 
-    def __init__(self, module: nn.Module, loss: nn.Module, x_updater, p_updater):
+    def __init__(self, module: nn.Module, objective: Objective, updater: THOptimBuilder=None):
         
         self._module = module
-        self._loss = loss
+        self._objective = objective
+        self._updater = updater(module, objective) or GradOptimizer(module, objective)
         # TODO* Build correctly
-        self._p_updater: Optimizer = p_updater(self._module, loss)
-        self._x_updater: Optimizer = x_updater(self._module, loss)
+        # if updater is None:
+        #     self._p_updater: Optimizer = GradOptimizer(self._module, LossObjective(loss, reduction=MeanReduction()), optim(self._module.parameters()))
+        #     self._x_updater: Optimizer = self._p_updater
+        # if isinstance(updater, tuple):
+        #     self._updater: Optimizer = XPOptimizer()
+            
+        #     updater[0](self._module, )
+        #     self._x_updater: Optimizer = updater[1](self._module, LossObjective(loss, reduction=MeanReduction()))
+        # else:
+        # updater(self._module, LossObjective(loss, reduction=MeanReduction()))
 
     def assess(self, x, t, ys=None):
         if ys is None:
-            y = self.forward(x)
+            y = self._objective(x)
         else:
             y = ys[1]
-        return self._loss(y, t)
+        return self._objective(y, t)
 
     def update_ys(self, x):
-        x = x.detach()
+        x = x.detach().requires_grad_()
+        x.retain_grad()
         y = self.forward(x)
         return y, [x, y]
     
     def get_y_out(self, ys):
         return ys[1]
 
+    def get_in(self, ys):
+        return ys[0]
+
     def forward(self, x):
-        # use the grad in the backward method
-        x.requires_grad_()
-        x.retain_grad()
+        # x = x.detach().requires_grad_()
+        # x.retain_grad()
         return self._module.forward(x)
 
     def backward(self, x, t, ys=None, update: bool=True):
-        
         if ys is not None:
             y = self.get_y_out(ys)
+            x = self.get_in(ys)
         else:
-            y  = None
+            x = x.detach().requires_grad_()
+            x.retain_grad()
+            y = self._module(x)
 
+        print('1: ', x)
         if update:
-            # self._p_updater.reset_fixed(x)
-            self._p_updater.update_theta(t, x=x, y=y)
-            self._x_updater.reset_fixed(self._p_updater.best)
+            self._updater.update_theta(t, y=y, inputs=x)
+            nn_utils.vector_to_parameters(self._p_updater.theta, self._module.parameters())
         
-        self._x_updater.reset_theta(x)
-        self._x_updater.update_theta(t, y=y)
-        return self._x_updater.best
+        print('2: ', x)
+        self._updater.update_inputs(t, y=y, inputs=x)
+        return self._updater.inputs
 
     @property
     def module(self):
@@ -491,6 +591,9 @@ class SklearnMachine(Machine):
     def get_y_out(self, ys):
         return ys
 
+    def get_in(self, ys):
+        raise NotImplementedError()
+
     def backward(self, x, t, ys=None, update: bool=True):
         
         if update:
@@ -515,6 +618,9 @@ class Sequence(Machine):
 
     def get_y_out(self, ys):
         return self.machines[-1].get_y_out(ys[-1]) 
+
+    def get_in(self, ys):
+        return ys[0]
 
     def update_ys(self, x):
         ys = [x]
@@ -689,6 +795,68 @@ class WeightedLoss(nn.Module):
         return self.weight * self.nn_loss(x, t)
 
 
+
+# class Func(ABC):
+
+#     @abstractmethod
+#     def __call__(self, x):
+#         pass
+
+#     @abstractmethod
+#     def reset_theta(self, p):
+#         pass
+
+
+# class NNFunc(Func):
+
+#     def __init__(self, nn_module: nn.Module, singular=False):
+#         self.nn_module = nn_module
+#         self.singular: bool = singular
+    
+#     def __call__(self, x):
+
+#         if self.singular:
+#             return self.nn_module(x)
+
+#         n, b = x.size(0), x.size(1)
+#         x = x.view(n * b, *x.size()[2:])
+#         y = self.nn_module(x)
+#         return x.view(n, b, *y.size()[1:])
+
+#     def reset_theta(self, theta):
+#         nn_utils.vector_to_parameters(theta, self.nn_module.parameters())
+
+
+# class NNParamFunc(Func):
+
+#     def __init__(self, nn_module, theta=None, singular=False):
+
+#         self.nn_module = deepcopy(nn_module)
+#         self.x = theta
+#         self.singular: bool = singular
+
+#     def __call__(self, x):
+        
+#         ys = []
+#         if self.singular:
+
+#             nn_utils.vector_to_parameters(x, self.nn_module.parameters())
+#             return self.nn_module(self.x)
+
+#         if len(x) == 0:
+#             return None
+#         for p_i in x:
+#             nn_utils.vector_to_parameters(p_i, self.nn_module.parameters())
+#             ys.append(self.nn_module(self.x))
+#         return th.stack(ys)
+
+#     def reset_theta(self, theta):
+#         self.x = theta
+
+#     def cur_parameters(self):
+#         return self.nn_module.parameters()
+
+
 # class THLoss(Layer):
 
 #     def __init__(self, th_loss: nn.Module, tau: float=1e-3):
@@ -788,6 +956,49 @@ class WeightedLoss(nn.Module):
 #         raise NotImplementedError
 
 
+
+# class XGradOptimizer(Optimizer):
+
+#     def __init__(self, net: nn.Module, objective: Objective, theta: th.Tensor=None):
+#         super().__init__(net, objective)
+#         self._evaluation = None
+#         self._net = net
+#         self._theta = theta
+
+#     def reset_theta(self, theta=None):
+#         # self._f.reset(theta)
+#         self._theta = theta
+
+#     def reset_fixed(self, fixed):
+#         self._fixed = fixed
+#         nn_utils.vector_to_parameters(fixed, self._f.parameters())
+#         self._evaluation = None
+
+#     def update_theta(self, t, fixed=None, y=None):
+
+#         grad_set = self._theta is not None and self._theta.grad is not None
+#         self._theta.requires_grad_()
+#         self._theta.retain_grad()
+#         if fixed is not None:
+#             self.reset_fixed(fixed)
+
+#         if y is None:
+#             y = self._net(self._theta)
+
+#         if not grad_set:
+#             self._evaluation = self._objective(y, t)
+#             self._evaluation.mean().backward()
+#         else:
+#             self._evaluation = None
+#         self._theta = self._theta - self._theta.grad
+
+#     @property
+#     def best(self):
+#         return self._theta
+    
+#     @property
+#     def evaluations(self):
+#         return [self._evaluation]
 
 
 # class Optimizer(ABC):
