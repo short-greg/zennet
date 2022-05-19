@@ -116,7 +116,7 @@ class TestHillClimbingOptimizer:
  
         net = nn.Linear(2, 2)
         optimizer = mac.HillClimberOptimizer(
-            net, objective, momentum=0.1, perturber=mac.GaussianHillClimberF(k=1)
+            net, objective, processor=mac.GaussianHillClimberProcessor(k=1)
         )
         optimizer.reset_theta(th.rand(6))
         best = optimizer.theta
@@ -128,7 +128,7 @@ class TestHillClimbingOptimizer:
  
         net = nn.Linear(2, 2)
         optimizer = mac.HillClimberOptimizer(
-            net, objective, momentum=0.1, perturber=mac.GaussianHillClimberF(k=4)
+            net, objective, processor=mac.GaussianHillClimberProcessor(k=4)
         )
         optimizer.reset_theta(th.rand(6))
         best = optimizer.theta
@@ -140,7 +140,7 @@ class TestHillClimbingOptimizer:
  
         net = nn.Linear(2, 2)
         optimizer = mac.HillClimberOptimizer(
-            net, objective, momentum=0.1, perturber=mac.GaussianHillClimberF(k=1)
+            net, objective, processor=mac.GaussianHillClimberProcessor(k=1)
         )
         optimizer.reset_theta(th.rand(6))
         best = optimizer.theta
@@ -153,7 +153,7 @@ class TestHillClimbingOptimizer:
  
         net = nn.Linear(2, 2)
         optimizer = mac.HillClimberOptimizer(
-            net, objective, momentum=0.1, perturber=mac.GaussianHillClimberF(k=1)
+            net, objective, processor=mac.GaussianHillClimberProcessor(k=1)
         )
         optimizer.reset_theta(th.rand(6))
         optimizer.reset_inputs(inputs=th.rand(2, 2))

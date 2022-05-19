@@ -408,7 +408,7 @@ class GaussianHillClimberProcessor(HillClimberProcessor):
         elif self._momentum is not None:
             self._diff = (best - self._x_updated)
             self._x_updated = self._x_updated + self._diff
-        else:
+        elif self._x_updated is not None:
             self._x_updated = best
         return self._x_updated
 
