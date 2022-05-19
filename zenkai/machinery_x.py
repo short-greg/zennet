@@ -361,33 +361,73 @@ class XPOptimizer(Optimizer):
             return self._p_updater.evaluations
 
 
-class HillClimberF(ABC):
+class HillClimberProcessor(ABC):
 
+    @abstractmethod
     def __call__(self, x):
+        pass
+    
+    @abstractmethod
+    def spawn(self):
+        pass
+    
+    @abstractmethod
+    def report(self, evaluations):
         pass
 
 
-class GaussianHillClimberF(HillClimberF):
+def get_best(x: th.Tensor, evaluations, maximize: bool=True):
+    if maximize:
+        idx = th.argmax(evaluations)
+    else:
+        idx = th.argmin(evaluations)
+    return x[idx]
 
-    def __init__(self, s: float=1e-2, k: int=1):
+
+class GaussianHillClimberProcessor(HillClimberProcessor):
+
+    def __init__(self, s: float=1e-2, k: int=1, momentum: float=None, maximize: bool=True):
         self.s = s
         self.k = k
+        self.maximize = maximize
+        self._momentum = momentum
+        self._diff = None
+        self._x_updated = None
 
     def __call__(self, x: th.Tensor):
         y = th.randn(self.k, *x.size()) * self.s + x
         x = x.unsqueeze(0)
-        return th.cat([x, y])
+        self._out = th.cat([x, y])
+        return self._out
+    
+    def report(self, evaluations):
+        best = get_best(self._out, evaluations, self.maximize)
+        if self._diff is not None and self._momentum is not None:
+            self._diff = (1 - self._momentum) * (best - self._x_updated) + self._momentum * self._diff
+            self._x_updated = self._x_updated + self._diff
+        elif self._momentum is not None:
+            self._diff = (best - self._x_updated)
+            self._x_updated = self._x_updated + self._diff
+        else:
+            self._x_updated = best
+        return self._x_updated
+
+    def spawn(self):
+        return GaussianHillClimberProcessor(
+            self.s, self.k, self._momentum, self.maximize
+        )
 
 
 class HillClimberOptimizer(TorchOptimizer):
 
-    def __init__(self, net: nn.Module, objective: Objective, momentum: float, perturber="gaussian"):
+    def __init__(self, net: nn.Module, objective: Objective, processor: typing.Union[str, GaussianHillClimberProcessor]="gaussian"):
         super().__init__(net, objective)
-        self._momentum = momentum
-        if perturber == "gaussian":
-            self.perturber = GaussianHillClimberF()
+        if processor == "gaussian":
+            self.input_processor = GaussianHillClimberProcessor(maximize=objective.maximize)
+            self.input_processor = GaussianHillClimberProcessor(maximize=objective.maximize)
         else:
-            self.perturber = perturber
+            self.input_processor = processor.spawn(maximize=objective.maximize)
+            self.theta_processor = processor.spawn(maximize=objective.maximize)
         self._inputs_diff = None
         self._theta_diff = None
         self._x = None
@@ -409,44 +449,32 @@ class HillClimberOptimizer(TorchOptimizer):
             self.reset_inputs(inputs)
         if theta is not None:
             self.reset_theta(theta)
-        theta = self.perturber(self._theta)
-        evaluations = []
-        for theta_i in theta:
-            nn_utils.vector_to_parameters(theta_i, self._net.parameters())
-            evaluations.append(self._objective.forward(self._net(self._inputs), t))
-        evaluations = th.stack(evaluations)
-        best = self._objective.best(evaluations, theta)
-        if self._theta_diff is not None and self._momentum is not None:
-            self._theta_diff = (1 - self._momentum) * (best - self._theta) + self._momentum * self._theta_diff
-            self._theta = self._theta + self._theta_diff
-        elif self._momentum is not None:
-            self._theta_diff = (best - self._theta)
-            self._theta = self._theta + self._theta_diff
-        else:
-            self._theta = best
         
-        self._evaluations = evaluations
-    
-    def update_inputs(self, t, inputs=None, theta=None, y=None):
+        self._evaluations = self._update_theta(t, y)
 
+    def update_theta(self, t, inputs=None, theta=None, y=None):
         if inputs is not None:
             self.reset_inputs(inputs)
         if theta is not None:
             self.reset_theta(theta)
         
-        inputs = self.perturber(self._inputs)
+        self._evaluations = self._update_inputs(t, y)
+
+    def _update_theta(self, t, y=None):
+        theta = self.theta_processor(self._theta)
+        evaluations = []
+        for theta_i in theta:
+            nn_utils.vector_to_parameters(theta_i, self._net.parameters())
+            evaluations.append(self._objective.forward(self._net(self._inputs), t))
+        evaluations = th.stack(evaluations)
+        self._theta = self.theta_processor.report(evaluations)
+        return evaluations
+    
+    def _update_inputs(self, t, y=None):
+        inputs = self.input_processor(self._inputs)
         evaluations = self._objective.forward_multi(self._net(inputs), t)
-        best = self._objective.best(evaluations, inputs)
-        if self._inputs_diff is not None and self._momentum is not None:
-            self._inputs_diff = (1 - self._momentum) * (best - self._inputs) + self._momentum * self._inputs_diff
-            self._inputs = self._inputs + self._inputs_diff
-        elif self._momentum is not None:
-            self._inputs_diff = (best - self._inputs)
-            self._inputs = self._inputs + self._inputs_diff
-        else:
-            self._inputs = best
-        
-        self._evaluations = evaluations
+        self._inputs = self.theta_processor.report(evaluations)
+        return evaluations
 
     @property
     def inputs(self):
@@ -485,11 +513,11 @@ class THOptimBuilder(object):
         )
         return self
     
-    def hill_climber(self, momentum=0.5, perturber=None):
+    def hill_climber(self, momentum=0.5, processor=None):
 
-        if perturber is None:
-            perturber = GaussianHillClimberF(s=1e-3, k=16)
-        self._optim = partial(HillClimberOptimizer, momentum=momentum, perturber=perturber)
+        if processor is None:
+            processor = GaussianHillClimberProcessor(s=1e-3, k=16)
+        self._optim = partial(HillClimberOptimizer, momentum=momentum, perturber=processor)
         return self
 
     def __call__(self, net, loss) -> Optimizer:
