@@ -116,7 +116,7 @@ class TestHillClimbingOptimizer:
  
         net = nn.Linear(2, 2)
         optimizer = mac.HillClimberOptimizer(
-            net, objective, processor=mac.GaussianHillClimberProcessor(k=1)
+            net, objective, processor=mac.StepHillClimberProcessor(k=1)
         )
         optimizer.reset_theta(th.rand(6))
         best = optimizer.theta
@@ -128,7 +128,7 @@ class TestHillClimbingOptimizer:
  
         net = nn.Linear(2, 2)
         optimizer = mac.HillClimberOptimizer(
-            net, objective, processor=mac.GaussianHillClimberProcessor(k=4)
+            net, objective, processor=mac.StepHillClimberProcessor(k=4)
         )
         optimizer.reset_theta(th.rand(6))
         best = optimizer.theta
@@ -140,7 +140,7 @@ class TestHillClimbingOptimizer:
  
         net = nn.Linear(2, 2)
         optimizer = mac.HillClimberOptimizer(
-            net, objective, processor=mac.GaussianHillClimberProcessor(k=1)
+            net, objective, processor=mac.StepHillClimberProcessor(k=1)
         )
         optimizer.reset_theta(th.rand(6))
         best = optimizer.theta
@@ -148,19 +148,59 @@ class TestHillClimbingOptimizer:
         assert len(optimizer.evaluations) == 2
     
     def test_input_is_different_value_after_update(self):
-        th.manual_seed(1)
+        th.manual_seed(9)
         objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
  
         net = nn.Linear(2, 2)
         optimizer = mac.HillClimberOptimizer(
-            net, objective, processor=mac.GaussianHillClimberProcessor(k=1)
+            net, objective, processor=mac.StepHillClimberProcessor(k=1)
         )
         optimizer.reset_theta(th.rand(6))
         optimizer.reset_inputs(inputs=th.rand(2, 2))
         best = optimizer.inputs
         optimizer.update_inputs(t=th.rand(2, 2))
         assert (optimizer.inputs != best).any()
-    
+
+    def test_input_is_different_value_after_two_updates(self):
+        th.manual_seed(5)
+        objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
+ 
+        net = nn.Linear(2, 2)
+        optimizer = mac.HillClimberOptimizer(
+            net, objective, processor=mac.StepHillClimberProcessor(k=1)
+        )
+        optimizer.reset_theta(th.rand(6))
+        optimizer.reset_inputs(inputs=th.rand(2, 2))
+        best = optimizer.inputs
+        optimizer.update_inputs(t=th.rand(2, 2))
+        optimizer.update_inputs(t=th.rand(2, 2))
+        assert (optimizer.inputs != best).any()
+
+class TestNRepeatOptimizer:
+
+    def test_update_theta_with_one_perturbation(self):
+        objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
+ 
+        net = nn.Linear(2, 2)
+        optimizer = mac.NRepeatOptimizer(mac.HillClimberOptimizer(
+            net, objective, processor=mac.StepHillClimberProcessor(k=1)
+        ), 3)
+
+        optimizer.reset_theta(th.rand(6))
+        optimizer.update_theta(t=th.rand(2, 2), inputs=th.rand(2, 2))
+        assert len(optimizer.evaluations) == 3
+
+    def test_update_theta_with_five_perturbations(self):
+        objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
+ 
+        net = nn.Linear(2, 2)
+        optimizer = mac.NRepeatOptimizer(mac.HillClimberOptimizer(
+            net, objective, processor=mac.StepHillClimberProcessor(k=1)
+        ), 3)
+        optimizer.reset_theta(th.rand(6))
+        optimizer.update_theta(t=th.rand(2, 2), inputs=th.rand(2, 2))
+        assert len(optimizer.evaluations) == 3
+
 
 class TestTHOptimBuilder:
 
