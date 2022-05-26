@@ -190,7 +190,7 @@ class Machine(ABC):
         pass
 
     @abstractmethod
-    def update_ys(self, x) -> typing.Tuple[typing.Any, typing.Any]:
+    def update_outs(self, x) -> typing.Tuple[typing.Any, typing.Any]:
         pass
 
     @abstractmethod
@@ -198,18 +198,18 @@ class Machine(ABC):
         pass
 
     @abstractmethod
-    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
+    def backward(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
         pass
 
     @abstractmethod
-    def get_y_out(self, ys):
+    def get_y_out(self, outs):
         pass
 
-    def update(self, x, t, ys=None):
-        self.backward(x, t, ys, True)    
+    def update(self, x, t, outs=None):
+        self.backward(x, t, outs, True)    
         
-    def update_x(self, x, t, ys=None):
-        return self.backward(x, t, ys, False) 
+    def update_x(self, x, t, outs=None):
+        return self.backward(x, t, outs, False) 
 
 
 class Optimizer(ABC):
@@ -489,7 +489,6 @@ class HillClimberOptimizer(TorchOptimizer):
         self._evaluation = None
         self._theta_diff = None
 
-
     def _update_theta(self, t, y=None):
         theta = self.theta_processor(self._theta)
         evaluations = []
@@ -615,34 +614,34 @@ class TorchNN(Machine):
         self._objective = objective
         self._updater = updater(module, objective) or GradOptimizer(module, objective)
 
-    def assess(self, x, t, ys=None):
-        if ys is None:
+    def assess(self, x, t, outs=None):
+        if outs is None:
             y = self._objective(x)
         else:
-            y = ys[1]
+            y = outs[1]
         return self._objective(y, t)
 
-    def update_ys(self, x):
+    def update_outs(self, x):
         x = x.detach().requires_grad_()
         x.retain_grad()
         y = self.forward(x)
         return y, [x, y]
     
-    def get_y_out(self, ys):
-        return ys[1]
+    def get_y_out(self, outs):
+        return outs[1]
 
-    def get_in(self, ys):
-        return ys[0]
+    def get_in(self, outs):
+        return outs[0]
 
     def forward(self, x):
         # x = x.detach().requires_grad_()
         # x.retain_grad()
         return self._module.forward(x)
 
-    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
-        if ys is not None:
-            y = self.get_y_out(ys)
-            x = self.get_in(ys)
+    def backward(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
+        if outs is not None:
+            y = self.get_y_out(outs)
+            x = self.get_in(outs)
         else:
             x = x.detach().requires_grad_()
             x.retain_grad()
@@ -668,14 +667,15 @@ class SklearnMachine(Machine):
         self._machines = machines
         self._updater = updater(machines)
 
-    def assess(self, x, t, ys=None):
+    def assess(self, x, t, outs=None):
+        # TODO: Check
         if y is None:
             y = self.forward(x)
         else:
-            ys = ys
+            outs = outs
         return self._loss(y, t)
 
-    def update_ys(self, x):
+    def update_outs(self, x):
         y = self.forward(x)
         return y, [x, y]
 
@@ -685,25 +685,15 @@ class SklearnMachine(Machine):
         y_np = np.stack([machine.predict(x_np) for machine in self._machines])
         return th.tensor(y_np, device=device)
         
-    def get_y_out(self, ys):
-        return ys[1]
+    def get_y_out(self, outs):
+        return outs[1]
 
-    def get_in(self, ys):
-        return ys[0]
+    def get_in(self, outs):
+        return outs[0]
     
-    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
-        # if ys is not None:
-        #     y = self.get_y_out(ys)
-        #     x = self.get_in(ys)
-        # else:
-        #     y = self.forward(x)
+    def backward(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
 
         if update:
-            # self._updater.update_theta(t, y=y, inputs=x)
-            # nn_utils.vector_to_parameters(self._p_updater.theta, self._module.parameters()
-            # x_np = x.detach().cpu().numpy()
-            # for machine in self._machines:
-            #     machine.partial_fit(x_np, t)
             self._updater.update_theta(t, inputs=x)
         
         if update_inputs:
@@ -718,27 +708,27 @@ class Sequence(Machine):
             raise ValueError(f'Length of sequence must be greater than 0')
         self.machines = machines
     
-    def assess(self, x, t, ys=None):
-        if ys is None:
-            _, ys = self.update_ys(x)
+    def assess(self, x, t, outs=None):
+        if outs is None:
+            _, outs = self.update_outs(x)
         
         return self.machines[-1].assess(
-            x, t, ys[-1]
+            x, t, outs[-1]
         )
 
-    def get_y_out(self, ys):
-        return self.machines[-1].get_y_out(ys[-1]) 
+    def get_y_out(self, outs):
+        return self.machines[-1].get_y_out(outs[-1]) 
 
-    def get_in(self, ys):
-        return ys[0]
+    def get_in(self, outs):
+        return outs[0]
 
-    def update_ys(self, x):
-        ys = [x]
+    def update_outs(self, x):
+        outs = [x]
         y = x
         for machine in self.machines:
-            y, ys_i = machine.update_ys(y)
-            ys.append(ys_i)
-        return y, ys
+            y, outs_i = machine.update_outs(y)
+            outs.append(outs_i)
+        return y, outs
 
     def forward(self, x):
         y = x
@@ -746,15 +736,15 @@ class Sequence(Machine):
             y = layer.forward(y)
         return y
 
-    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
-        if ys is None:
-            _, ys = self.update_ys(x)
+    def backward(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
+        if outs is None:
+            _, outs = self.update_outs(x)
         
         xs = [x]
-        for y_i, machine in zip(ys[1:-1], self.machines[:-1]):
+        for y_i, machine in zip(outs[1:-1], self.machines[:-1]):
             xs.append(machine.get_y_out(y_i))
 
-        for i, (x_i, y_i, machine) in enumerate(zip(reversed(xs), reversed(ys[1:]), reversed(self.machines))):
+        for i, (x_i, y_i, machine) in enumerate(zip(reversed(xs), reversed(outs[1:]), reversed(self.machines))):
             _update_inputs = i < len(xs) or update_inputs
             t = machine.backward(x_i, t, y_i, update, _update_inputs)
         return t
@@ -763,7 +753,7 @@ class Sequence(Machine):
 class Processor(ABC):
 
     @abstractmethod
-    def update_ys(self, x):
+    def update_outs(self, x):
         pass
 
     @abstractmethod
@@ -771,28 +761,28 @@ class Processor(ABC):
         pass
 
     @abstractmethod
-    def backward(self, x, t, ys=None):
+    def backward(self, x, t, outs=None):
         pass
 
     @abstractmethod
-    def get_y_out(self, ys):
+    def get_y_out(self, outs):
         pass
 
 
 class TH2NP(Processor):
 
-    def update_ys(self, x):
+    def update_outs(self, x):
         y = self.forward(x)
         return y, y
 
     def forward(self, x):
         return x.detach().cpu().numpy()
 
-    def backward(self, x, t, ys=None):
+    def backward(self, x, t, outs=None):
         return th.from_numpy(t)
 
-    def get_y_out(self, ys):
-        return ys
+    def get_y_out(self, outs):
+        return outs
 
 
 class NP2TH(Processor):
@@ -800,7 +790,7 @@ class NP2TH(Processor):
     def __init__(self, dtype: th.dtype=th.float32):
         self.dtype = dtype
 
-    def update_ys(self, x):
+    def update_outs(self, x):
         y = self.forward(x)
         return y, y
 
@@ -808,11 +798,11 @@ class NP2TH(Processor):
         return th.tensor(x, dtype=self.dtype)
         # return th.from_numpy(x)
 
-    def backward(self, x, t, ys=None):
+    def backward(self, x, t, outs=None):
         return t.detach().cpu().numpy()
 
-    def get_y_out(self, ys):
-        return ys
+    def get_y_out(self, outs):
+        return outs
 
 
 class CompositeProcessor(Processor):
@@ -821,13 +811,13 @@ class CompositeProcessor(Processor):
 
         self.processors = processors
 
-    def update_ys(self, x):
-        ys = [x]
+    def update_outs(self, x):
+        outs = [x]
         y = x
         for processor in self.processors:
-            y, ys_i = processor.update_ys(y)
-            ys.append(ys_i)
-        return y, ys
+            y, outs_i = processor.update_outs(y)
+            outs.append(outs_i)
+        return y, outs
 
     def forward(self, x):
         y = x
@@ -835,21 +825,21 @@ class CompositeProcessor(Processor):
             y = processor.forward(y)
         return y
 
-    def backward(self, x, t, ys=None):
+    def backward(self, x, t, outs=None):
 
-        if ys is None:
-            _, ys = self.update_ys(x)
+        if outs is None:
+            _, outs = self.update_outs(x)
         
-        xs = ys[:-1]
+        xs = outs[:-1]
         for x_i, y_i, processor in zip(
-            reversed(xs), reversed(ys[1:-1]), reversed(self.processors)):
+            reversed(xs), reversed(outs[1:-1]), reversed(self.processors)):
             t = processor.backward(x_i, t, y_i)
         return t
 
-    def get_y_out(self, ys):
+    def get_y_out(self, outs):
         if len(self.processors) == 0:
-            return ys[0]
-        return self.processors[-1].get_y_out(ys[-1])
+            return outs[0]
+        return self.processors[-1].get_y_out(outs[-1])
 
 
 class Processed(Machine):
@@ -861,37 +851,37 @@ class Processed(Machine):
         self.processors = CompositeProcessor(processors)
         self.machine = machine
     
-    def assess(self, x, t, ys=None):
-        if not ys:
-            y, ys = self.update_ys(x)
-        # if ys is None:
+    def assess(self, x, t, outs=None):
+        if not outs:
+            y, outs = self.update_outs(x)
+        # if outs is None:
         #     y = self.forward(x)
         # else:
-        #     y = self.machine.get_y_out(ys[1])
-        y = self.processors.get_y_out(ys[0])
-        return self.machine.assess(y, t, ys[1])
+        #     y = self.machine.get_y_out(outs[1])
+        y = self.processors.get_y_out(outs[0])
+        return self.machine.assess(y, t, outs[1])
     
-    def update_ys(self, x):
-        y, ys_i = self.processors.update_ys(x)
-        # y = ys[-1] if ys[-1] is not None else x
-        y, ys_j = self.machine.update_ys(y)
-        return y, [ys_i, ys_j]
+    def update_outs(self, x):
+        y, outs_i = self.processors.update_outs(x)
+        # y = outs[-1] if outs[-1] is not None else x
+        y, outs_j = self.machine.update_outs(y)
+        return y, [outs_i, outs_j]
 
     def forward(self, x):
         y = self.processors.forward(x)
         return self.machine.forward(y)
 
-    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
-        if ys is None:
-            _, ys = self.update_ys(x)
+    def backward(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
+        if outs is None:
+            _, outs = self.update_outs(x)
 
-        y_in = self.processors.get_y_out(ys[0])
-        t = self.machine.backward(y_in, t, ys[1], update, update_inputs)
+        y_in = self.processors.get_y_out(outs[0])
+        t = self.machine.backward(y_in, t, outs[1], update, update_inputs)
         if update_inputs:
-            return self.processors.backward(x, t, ys[0])
+            return self.processors.backward(x, t, outs[0])
 
-    def get_y_out(self, ys):
-        return self.machine.get_y_out(ys[-1])
+    def get_y_out(self, outs):
+        return self.machine.get_y_out(outs[-1])
 
 
 class WeightedLoss(nn.Module):
