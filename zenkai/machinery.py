@@ -198,7 +198,7 @@ class Machine(ABC):
         pass
 
     @abstractmethod
-    def backward(self, x, t, ys=None, param_update: bool=True):
+    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
         pass
 
     @abstractmethod
@@ -250,6 +250,32 @@ class TorchOptimizer(Optimizer):
         self._objective = objective
         self._net = net
 
+    def update_theta(self, t, inputs=None, theta=None, y=None):
+        if inputs is not None:
+            self.reset_inputs(inputs)
+        if theta is not None:
+            self.reset_theta(theta)
+        
+        self._evaluations = self._update_theta(t, y)
+
+    def update_inputs(self, t, inputs=None, theta=None, y=None):
+        if inputs is not None:
+            self.reset_inputs(inputs)
+        if theta is not None:
+            self.reset_theta(theta)
+        
+        self._evaluations = self._update_inputs(t, y)
+    
+    def _update_inputs(self, t, y=None):
+        pass
+
+    def _update_theta(self, t, y=None):
+        pass
+
+    @property
+    def evaluations(self):
+        return self._evaluations
+
 
 class GradOptimizer(TorchOptimizer):
 
@@ -257,7 +283,6 @@ class GradOptimizer(TorchOptimizer):
         super().__init__(net, objective)
         self._net = net
         self._optim: th.optim.Optimizer = optim(self._net.parameters())
-        self._evaluation = None
 
     def reset_theta(self, theta=None):
         self._theta = theta
@@ -265,35 +290,29 @@ class GradOptimizer(TorchOptimizer):
         self._evaluation = None
 
     def reset_inputs(self, inputs):
-        
         self._inputs = inputs
         self._evaluation = None
 
-    def update_theta(self, t, inputs=None, theta=None, y=None):
-        if inputs is not None:
-            self.reset_inputs(inputs)
-        if theta is not None:
-            self.reset_theta(theta)
+    def _update_theta(self, t, y=None):
         self._optim.zero_grad()
         if y is None:
             y = self._net(self._inputs)
-        self._evaluation = self._objective(y, t)
-        self._evaluation.mean().backward()
+        evaluation = self._objective(y, t)
+        evaluation.mean().backward()
         self._optim.step()
+        return evaluation.view(1, -1)
 
-    def update_inputs(self, t, inputs: th.Tensor=None, theta=None, y=None):
-        if inputs is not None:
-            self.reset_inputs(inputs)
-        if theta is not None:
-            self.reset_theta(theta)
+    def _update_inputs(self, t, y=None):
         
         if y is None:
             y = self._net(self._inputs)
-        self._evaluation = self._objective(y, t)
-        self._evaluation.sum().backward()
+        evaluation = self._objective(y, t)
+        if self._inputs.grad is None:
+            evaluation.sum().backward()
         if self._inputs.grad is None:
             raise RuntimeError("Input is not a leaf node or does not retain grad")
         self._inputs = self._inputs - self._inputs.grad
+        return evaluation.view(1, -1)
 
     @property
     def inputs(self):
@@ -303,10 +322,6 @@ class GradOptimizer(TorchOptimizer):
     def theta(self):
         return nn.utils.parameters_to_vector(self._net.parameters())
     
-    @property
-    def evaluations(self):
-        return [self._evaluation]
-
 
 class XPOptimizer(Optimizer):
 
@@ -399,7 +414,9 @@ class StepHillClimberProcessor(HillClimberProcessor):
         self._out = None
         self._s = None
         self._step_evaluations = {}
-        self._keep_s = 20
+        self._keep_s = 50
+        self._i = 0
+        self._update_after = 400
 
     def __call__(self, x: th.Tensor):
         
@@ -410,18 +427,19 @@ class StepHillClimberProcessor(HillClimberProcessor):
         self._out = th.cat([x.unsqueeze(0), y])
         return self._out
     
-    def report(self, evaluations):
+    def report(self, evaluations: th.Tensor):
 
-        self._step_evaluations.update(dict(zip(self._s.tolist(), evaluations.tolist())))
         self._step_evaluations = {
             k: v for i, (k, v) in enumerate(
-                sorted(self._step_evaluations.items(), key=lambda item: item[1], reverse=True)
+                sorted(self._step_evaluations.items(), key=lambda item: item[1], reverse=self.maximize)
             ) if i < self._keep_s
         }
+        self._step_evaluations.update(dict(zip(self._s.tolist(), evaluations[1:].tolist())))
 
-        self.s_mean = statistics.mean(self._step_evaluations.keys())
-        if len(self._step_evaluations) > 2:
-            self.s_std = statistics.stdev(self._step_evaluations.keys())
+        # self.s_mean = statistics.mean(self._step_evaluations.keys())
+        # print(self.s_mean)
+        # if len(self._step_evaluations) > 2:
+        #    self.s_std = statistics.stdev(self._step_evaluations.keys())
 
         if self._out is None:
             raise RuntimeError('Have not processed any inputs yet (i.e. use __call__)')
@@ -434,6 +452,9 @@ class StepHillClimberProcessor(HillClimberProcessor):
             x_updated = self._x + self._diff
         else:
             x_updated = best
+        self._i += 1
+        if self._i % self._update_after == 0:
+            self.s_mean -= 0.5
         return x_updated
 
     def spawn(self, maximize: bool=None):
@@ -468,21 +489,6 @@ class HillClimberOptimizer(TorchOptimizer):
         self._evaluation = None
         self._theta_diff = None
 
-    def update_theta(self, t, inputs=None, theta=None, y=None):
-        if inputs is not None:
-            self.reset_inputs(inputs)
-        if theta is not None:
-            self.reset_theta(theta)
-        
-        self._evaluations = self._update_theta(t, y)
-
-    def update_inputs(self, t, inputs=None, theta=None, y=None):
-        if inputs is not None:
-            self.reset_inputs(inputs)
-        if theta is not None:
-            self.reset_theta(theta)
-        
-        self._evaluations = self._update_inputs(t, y)
 
     def _update_theta(self, t, y=None):
         theta = self.theta_processor(self._theta)
@@ -577,7 +583,7 @@ class THOptimBuilder(object):
     def __init__(self):
         
         self._optim = None
-        self.grad()
+        self.grad(lr=1e-2)
 
     def grad(self, optim_cls=None, **kwargs):
 
@@ -633,7 +639,7 @@ class TorchNN(Machine):
         # x.retain_grad()
         return self._module.forward(x)
 
-    def backward(self, x, t, ys=None, update: bool=True):
+    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
         if ys is not None:
             y = self.get_y_out(ys)
             x = self.get_in(ys)
@@ -646,8 +652,9 @@ class TorchNN(Machine):
             self._updater.update_theta(t, y=y, inputs=x)
             nn_utils.vector_to_parameters(self._updater.theta, self._module.parameters())
         
-        self._updater.update_inputs(t, y=y, inputs=x)
-        return self._updater.inputs
+        if update_inputs:
+            self._updater.update_inputs(t, y=y, inputs=x)
+            return self._updater.inputs
 
     @property
     def module(self):
@@ -684,7 +691,7 @@ class SklearnMachine(Machine):
     def get_in(self, ys):
         return ys[0]
     
-    def backward(self, x, t, ys=None, update: bool=True):
+    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
         # if ys is not None:
         #     y = self.get_y_out(ys)
         #     x = self.get_in(ys)
@@ -698,9 +705,10 @@ class SklearnMachine(Machine):
             # for machine in self._machines:
             #     machine.partial_fit(x_np, t)
             self._updater.update_theta(t, inputs=x)
-            
-        self._updater.update_inputs(t, inputs=x)
-        return self._updater.inputs
+        
+        if update_inputs:
+            self._updater.update_inputs(t, inputs=x)
+            return self._updater.inputs
 
 
 class Sequence(Machine):
@@ -738,7 +746,7 @@ class Sequence(Machine):
             y = layer.forward(y)
         return y
 
-    def backward(self, x, t, ys=None, update: bool=True):
+    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
         if ys is None:
             _, ys = self.update_ys(x)
         
@@ -746,8 +754,9 @@ class Sequence(Machine):
         for y_i, machine in zip(ys[1:-1], self.machines[:-1]):
             xs.append(machine.get_y_out(y_i))
 
-        for x_i, y_i, machine in zip(reversed(xs), reversed(ys[1:]), reversed(self.machines)):
-            t = machine.backward(x_i, t, y_i, update)
+        for i, (x_i, y_i, machine) in enumerate(zip(reversed(xs), reversed(ys[1:]), reversed(self.machines))):
+            _update_inputs = i < len(xs) or update_inputs
+            t = machine.backward(x_i, t, y_i, update, _update_inputs)
         return t
 
 
@@ -872,13 +881,14 @@ class Processed(Machine):
         y = self.processors.forward(x)
         return self.machine.forward(y)
 
-    def backward(self, x, t, ys=None, update: bool=True):
+    def backward(self, x, t, ys=None, update: bool=True, update_inputs: bool= True):
         if ys is None:
             _, ys = self.update_ys(x)
 
         y_in = self.processors.get_y_out(ys[0])
-        t = self.machine.backward(y_in, t, ys[1], update)
-        return self.processors.backward(x, t, ys[0])
+        t = self.machine.backward(y_in, t, ys[1], update, update_inputs)
+        if update_inputs:
+            return self.processors.backward(x, t, ys[0])
 
     def get_y_out(self, ys):
         return self.machine.get_y_out(ys[-1])

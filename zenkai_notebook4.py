@@ -1,5 +1,6 @@
 # %%
 import os
+import statistics
 import sys
 import tqdm
 
@@ -28,7 +29,7 @@ np.random.seed(1)
 
 
 X, t = make_blobs(
-    n_samples=20000, centers=3, n_features=2,
+    n_samples=20000, centers=3, n_features=2, 
     random_state=0
 )
 
@@ -40,7 +41,7 @@ objective2 = machinery.LossObjective(nn.CrossEntropyLoss, reduction=machinery.Me
 objective1 = machinery.LossObjective(nn.MSELoss, reduction=machinery.MeanReduction())
 net1 = nn.Sequential(nn.Linear(2, 4), nn.Sigmoid())
 net2 = nn.Sequential(nn.Linear(4, 3))
-builder = machinery.THOptimBuilder().hill_climber(momentum=0.9)
+builder = machinery.THOptimBuilder() #  .hill_climber(momentum=None)
 
 layer1 = machinery.TorchNN(
     net1, objective1, builder
@@ -54,18 +55,19 @@ layer2 = machinery.TorchNN(
 sequence = machinery.Sequence(
     [layer1, layer2]
 )
+#sequence = layer2
 # print('result: ', layer1.backward(X, t))
 
 
-batch_size = 32
+batch_size = 128
 
 n_iterations = len(X) // batch_size
 losses = []
-n_epochs = 1
+n_epochs = 10
 
-with tqdm.tqdm(total=n_iterations) as tq:
 
-    for _ in range(n_epochs):
+for _ in range(n_epochs):
+    with tqdm.tqdm(total=n_iterations) as tq:   
         order = np.random.permutation(len(X))
         for i in range(n_iterations):
             from_idx = i * batch_size
@@ -79,10 +81,11 @@ with tqdm.tqdm(total=n_iterations) as tq:
             y, ys = sequence.update_ys(x_i)
             assessment = sequence.assess(x_i, t_i, ys)
             losses.append(assessment.item())
-            sequence.backward(x_i, t_i, ys)
+            sequence.backward(x_i, t_i, ys, update_inputs=False)
             # print(next(layer1.module.parameters()))
-            tq.set_postfix({'Loss': assessment.item()}, refresh=True)
+            tq.set_postfix({'Loss': statistics.mean(losses[-20:])}, refresh=True)
             tq.update(1)
+        
 
 print(losses)
 
