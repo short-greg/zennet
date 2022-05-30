@@ -402,7 +402,7 @@ def get_best(x: th.Tensor, evaluations, maximize: bool=True):
 
 class StepHillClimberProcessor(HillClimberProcessor):
 
-    def __init__(self, s_mean: int=-2, s_std=1, k: int=1, momentum: float=None, maximize: bool=True):
+    def __init__(self, s_mean: int=-2, s_std=1, k: int=1, momentum: float=None, maximize: bool=True, update_after: int=400):
         self.s_mean = s_mean
         self.s_std = s_std
 
@@ -414,9 +414,16 @@ class StepHillClimberProcessor(HillClimberProcessor):
         self._out = None
         self._s = None
         self._step_evaluations = {}
-        self._keep_s = 50
+        self._keep_s = 100
         self._i = 0
-        self._update_after = 400
+        self._update_after = update_after
+        self._mean_offset = 0.
+    
+    def reset_state(self):
+        self._diff = None
+        self._x_updated = None
+        self._out = None
+        self._s = None
 
     def __call__(self, x: th.Tensor):
         
@@ -436,10 +443,12 @@ class StepHillClimberProcessor(HillClimberProcessor):
         }
         self._step_evaluations.update(dict(zip(self._s.tolist(), evaluations[1:].tolist())))
 
-        # self.s_mean = statistics.mean(self._step_evaluations.keys())
+        self.s_mean = statistics.mean(self._step_evaluations.keys())
         # print(self.s_mean)
-        # if len(self._step_evaluations) > 2:
-        #    self.s_std = statistics.stdev(self._step_evaluations.keys())
+        if len(self._step_evaluations) > 2:
+           self.s_std = statistics.stdev(self._step_evaluations.keys())
+        
+        self.s_mean += self._mean_offset
 
         if self._out is None:
             raise RuntimeError('Have not processed any inputs yet (i.e. use __call__)')
@@ -453,8 +462,8 @@ class StepHillClimberProcessor(HillClimberProcessor):
         else:
             x_updated = best
         self._i += 1
-        if self._i % self._update_after == 0:
-            self.s_mean -= 0.5
+        # if self._i % self._update_after == 0:
+        #     self._mean_offset -= 0.5
         return x_updated
 
     def spawn(self, maximize: bool=None):
@@ -482,12 +491,14 @@ class HillClimberOptimizer(TorchOptimizer):
         self._inputs = inputs
         self._evaluation = None
         self._inputs_diff = None
+        self.input_processor.reset_state()
 
     def reset_theta(self, theta):
         self._theta = theta
         nn_utils.vector_to_parameters(theta, self._net.parameters())
         self._evaluation = None
         self._theta_diff = None
+        self.theta_processor.reset_state()
 
     def _update_theta(self, t, y=None):
         theta = self.theta_processor(self._theta)
@@ -531,9 +542,11 @@ class RepeatOptimizer(Optimizer):
     def reset_theta(self, theta):
         self._sub_optimizer.reset_theta(theta)
 
+    @abstractmethod
     def update_theta(self, t, inputs=None, theta=None, y=None):
         pass
 
+    @abstractmethod
     def update_inputs(self, t, inputs=None, theta=None, y=None):
         pass
 
@@ -577,12 +590,20 @@ class SKOptimBuilder(object):
         pass
 
 
-class THOptimBuilder(object):
+class THOptimBuilder(ABC):
+
+    @abstractmethod
+    def __call__(self, net, loss) -> Optimizer:
+        pass
+
+
+class SingleOptimBuilder(object):
 
     def __init__(self):
         
         self._optim = None
         self.grad(lr=1e-2)
+        self.n_repetitions = 1
 
     def grad(self, optim_cls=None, **kwargs):
 
@@ -595,24 +616,48 @@ class THOptimBuilder(object):
         )
         return self
     
-    def hill_climber(self, momentum=0.5, processor=None):
+    def step_hill_climber(self, momentum=0.5, mean: float=-1e-2, std: float=1, update_after: int=400):
 
-        if processor is None:
-            processor = StepHillClimberProcessor(k=16, momentum=momentum)
+        processor = StepHillClimberProcessor(k=16, momentum=momentum, s_mean=mean, s_std=std, update_after=update_after)
         self._optim = partial(HillClimberOptimizer, processor=processor)
+        return self
+    
+    def repeat(self, n_repetitions: int):
+
+        if n_repetitions <= 0:
+            raise RuntimeError("Repetitions must be greater than or equal to 1")
+        self.n_repetitions = n_repetitions
         return self
 
     def __call__(self, net, loss) -> Optimizer:
-        return self._optim(net, loss)
+        if self.n_repetitions > 1:
+            return NRepeatOptimizer(self._optim(net, loss), self.n_repetitions)
+        else:
+            return self._optim(net, loss)
+
+
+class THXPBuilder(object):
+
+    def __init__(self, x_builder: THOptimBuilder, p_builder: THOptimBuilder):
+        
+        self._x_builder = x_builder
+        self._p_builder = p_builder
+
+    def __call__(self, net, loss):
+
+        x_updater = self._x_builder(net, loss)
+        p_updater = self._p_builder(net, loss)
+        return XPOptimizer(x_updater, p_updater)
 
 
 class TorchNN(Machine):
 
-    def __init__(self, module: nn.Module, objective: Objective, updater: THOptimBuilder=None):
+    def __init__(self, module: nn.Module, objective: Objective, updater: THOptimBuilder=None, fixed: bool=False):
         
         self._module = module
         self._objective = objective
         self._updater = updater(module, objective) or GradOptimizer(module, objective)
+        self._fixed = fixed
 
     def assess(self, x, t, outs=None):
         if outs is None:
@@ -620,6 +665,9 @@ class TorchNN(Machine):
         else:
             y = outs[1]
         return self._objective(y, t)
+
+    def fix(self, fixed: bool=True):
+        self._fixed = fixed
 
     def update_outs(self, x):
         x = x.detach().requires_grad_()
@@ -647,7 +695,7 @@ class TorchNN(Machine):
             x.retain_grad()
             y = self._module(x)
 
-        if update:
+        if update and not self._fixed:
             self._updater.update_theta(t, y=y, inputs=x)
             nn_utils.vector_to_parameters(self._updater.theta, self._module.parameters())
         
@@ -662,10 +710,15 @@ class TorchNN(Machine):
 
 class SklearnMachine(Machine):
 
-    def __init__(self, machines, updater: SKOptimBuilder=None):
+    def __init__(self, machines, loss, updater: SKOptimBuilder=None, fixed: bool=False):
         super().__init__()
         self._machines = machines
+        self._loss = loss
         self._updater = updater(machines)
+        self._fixed = fixed
+
+    def fix(self, fixed: bool=True):
+        self._fixed = fixed
 
     def assess(self, x, t, outs=None):
         # TODO: Check
@@ -693,12 +746,91 @@ class SklearnMachine(Machine):
     
     def backward(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
 
-        if update:
+        if update and not self._fixed:
             self._updater.update_theta(t, inputs=x)
         
         if update_inputs:
             self._updater.update_inputs(t, inputs=x)
             return self._updater.inputs
+
+
+class Blackbox(nn.Module):
+    """
+    Executes any function whether it uses tensors or not 
+    """
+
+    def __init__(self, f, preprocessor=None, postprocessor=None):
+        super().__init__()
+        self._f = f
+        self._preprocessor = preprocessor
+        self._postprocessor = postprocessor
+
+    def forward(self, x):
+
+        return self._postprocessor(self._f(self._preprocessor(x)))
+
+
+class BlackboxOptimBuilder:
+
+    def __init__(self):
+        
+        self._optim = None
+        self.step_hill_climber()
+        self.n_repetitions = 1
+
+    def step_hill_climber(self, momentum=0.5, mean: float=-1e-2, std: float=1, update_after: int=400):
+
+        processor = StepHillClimberProcessor(k=16, momentum=momentum, s_mean=mean, s_std=std, update_after=update_after)
+        self._optim = partial(HillClimberOptimizer, processor=processor)
+        return self
+    
+    def repeat(self, n_repetitions: int):
+
+        if n_repetitions <= 0:
+            raise RuntimeError("Repetitions must be greater than or equal to 1")
+        self.n_repetitions = n_repetitions
+        return self
+
+    def __call__(self, net: Blackbox, loss) -> Optimizer:
+        if self.n_repetitions > 1:
+            return NRepeatOptimizer(self._optim(net, loss), self.n_repetitions)
+        else:
+            return self._optim(net, loss)
+
+
+class BlackboxMachine(Machine):
+
+    def __init__(self, f, loss, input_updater: BlackboxOptimBuilder=None):
+        super().__init__()
+        self._f = f
+        self._input_updater = input_updater(f, loss)
+        self._loss = loss
+
+    def assess(self, x, t, outs=None):
+        if y is None:
+            y = self.forward(x)
+        else:
+            outs = outs
+        return self._loss(y, t)
+
+    def update_outs(self, x):
+        y = self.forward(x)
+        return y, [x, y]
+
+    def forward(self, x: th.Tensor):
+        return self._f(x)
+    
+    def get_y_out(self, outs):
+        return outs[1]
+
+    def get_in(self, outs):
+        return outs[0]
+    
+    def backward(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
+        
+        if update_inputs:
+            self._input_updater.update_inputs(t, inputs=x)
+            return self._input_updater.inputs
 
 
 class Sequence(Machine):
