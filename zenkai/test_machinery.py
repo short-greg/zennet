@@ -208,13 +208,13 @@ class TestTHOptimBuilder:
 
         objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
         net = nn.Linear(2, 2)
-        optimizer = mac.THOptimBuilder().grad()(net, objective)
+        optimizer = mac.SingleOptimBuilder().grad()(net, objective)
         assert isinstance(optimizer, mac.GradOptimizer)
     
     def test_hill_climber_builder_builds_hill_climber(self):
         objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
         net = nn.Linear(2, 2)
-        optimizer = mac.THOptimBuilder().hill_climber()(net, objective)
+        optimizer = mac.SingleOptimBuilder().step_hill_climber()(net, objective)
         assert isinstance(optimizer, mac.HillClimberOptimizer)
 
 
@@ -227,7 +227,7 @@ class TestProcessed:
         )
 
         objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
-        optim = mac.THOptimBuilder().hill_climber()
+        optim = mac.SingleOptimBuilder().step_hill_climber()
         machine = mac.TorchNN(layer, objective, optim)
         processed = mac.Processed(processors, machine)
 
@@ -287,8 +287,8 @@ class TestSequence:
         )
 
         objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
-        optim = mac.THOptimBuilder().grad()
-        optim2 = mac.THOptimBuilder().grad()
+        optim = mac.SingleOptimBuilder().grad()
+        optim2 = mac.SingleOptimBuilder().grad()
 
         machine = mac.TorchNN(layer1, objective, optim)
         machine2 = mac.TorchNN(layer2, objective, optim2)
