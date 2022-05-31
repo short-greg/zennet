@@ -236,7 +236,7 @@ class TestProcessed:
     def test_processed_with_no_processor(self):
         machine, layer, loss = self._build_layer_and_machine([])
         x = th.zeros(3, 2)
-        result = machine.out(x)
+        result = machine.forward(x)
         target = layer.forward(x)
         assert (result == target).all()
 
@@ -244,7 +244,7 @@ class TestProcessed:
         th.manual_seed(1)
         machine, layer, loss = self._build_layer_and_machine([mac.NP2TH()])
         x = np.zeros((3, 2))
-        result = machine.out(x)
+        result = machine.forward(x)
         target = layer.forward(th.tensor(x, dtype=th.float32))
         assert (result == target).all()
 
@@ -254,7 +254,7 @@ class TestProcessed:
         x = np.zeros((3, 2))
         t = th.rand(3, 2)
         target = loss(layer.forward(th.tensor(x, dtype=th.float32)), t)
-        _, result = machine.forward(x, t, update=False)
+        _, result = machine.forward_update(x, t, update=False)
         print(result, target)
         assert (result == target).all()
 
@@ -263,7 +263,7 @@ class TestProcessed:
         th.manual_seed(1)
         x = np.zeros((3, 2))
         t = th.rand(3, 2)
-        x_t = machine.update_x(x, t)
+        x_t = machine.backward_update(x, t, update=False)
         assert (x_t.shape == x.shape)
 
     def test_torch_nn_forward_with_linear_plus_sigmoid_with_no_processor(self):
@@ -272,7 +272,7 @@ class TestProcessed:
         x = th.zeros(3, 2)
         t = th.rand(3, 2)
         target = loss(layer.forward(x), t)
-        _, result = machine.forward(x, t, update=False)
+        _, result = machine.forward_update(x, t, update=False)
         assert (result == target).all()
 
 class TestSequence:
@@ -299,7 +299,7 @@ class TestSequence:
     def test_sequence_forward(self):
         machine, layer1, layer2, loss1, loss2 = self._build_layer_and_machine()
         x = th.zeros(3, 2)
-        result = machine.out(x)
+        result = machine.forward(x)
         target = layer2(layer1.forward(x))
         assert (result == target).all()
 
@@ -309,7 +309,7 @@ class TestSequence:
         x = th.zeros((3, 2))
         t = th.rand(3, 2)
         target = loss2(layer2(layer1(x)), t)
-        _, result = machine.forward(x, t, update=False)
+        _, result = machine.forward_update(x, t, update=False)
         assert (result == target).all()
 
     def test_torch_nn_backward_with_linear_plus_sigmoid(self):
@@ -318,5 +318,5 @@ class TestSequence:
         x = th.zeros((3, 2), requires_grad=True)
         x.retain_grad()
         t = th.rand(3, 2)
-        x_t = machine.update_x(x, t)
+        x_t = machine.backward_update(x, t, update=False)
         assert (x_t.shape == x.shape)
