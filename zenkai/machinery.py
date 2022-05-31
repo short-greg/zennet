@@ -201,7 +201,7 @@ class Machine(ABC):
         pass
 
     @abstractmethod
-    def layer_outs(self, x) -> typing.Tuple[typing.Any, typing.Any]:
+    def output_ys(self, x) -> typing.Tuple[typing.Any, typing.Any]:
         pass
 
     @abstractmethod
@@ -705,7 +705,7 @@ class TorchNN(Machine):
     def fix(self, fixed: bool=True):
         self._fixed = fixed
 
-    def layer_outs(self, x):
+    def output_ys(self, x):
         x = x.detach().requires_grad_()
         x.retain_grad()
         y = self.forward(x)
@@ -772,7 +772,7 @@ class SklearnMachine(Machine):
         #     outs = outs
         return self._loss(y, t)
 
-    def layer_outs(self, x):
+    def output_ys(self, x):
         y = self.forward(x)
         return y, [x, y]
 
@@ -864,7 +864,7 @@ class BlackboxMachine(Machine):
             outs = outs
         return self._loss(y, t)
 
-    def layer_outs(self, x):
+    def output_ys(self, x):
         y = self.forward(x)
         return y, [x, y]
 
@@ -919,7 +919,7 @@ class Sequence(Machine):
     
     def assess(self, y, t): # , outs=None):
         # if outs is None:
-        #     _, outs = self.layer_outs(x)
+        #     _, outs = self.output_ys(x)
         
         return self.machines[-1].assess(
             y, t
@@ -931,11 +931,11 @@ class Sequence(Machine):
     def get_in(self, outs):
         return outs[0]
 
-    def layer_outs(self, x):
+    def output_ys(self, x):
         outs = [x]
         y = x
         for machine in self.machines:
-            y, outs_i = machine.layer_outs(y)
+            y, outs_i = machine.output_ys(y)
             outs.append(outs_i)
         return y, outs
 
@@ -963,7 +963,7 @@ class Sequence(Machine):
 
     def backward_update(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
         if outs is None:
-            _, outs = self.layer_outs(x)
+            _, outs = self.output_ys(x)
         
         xs = [x]
         for y_i, machine in zip(outs[1:-1], self.machines[:-1]):
@@ -978,7 +978,7 @@ class Sequence(Machine):
 class Processor(ABC):
 
     @abstractmethod
-    def layer_outs(self, x):
+    def output_ys(self, x):
         pass
 
     @abstractmethod
@@ -996,7 +996,7 @@ class Processor(ABC):
 
 class TH2NP(Processor):
 
-    def layer_outs(self, x):
+    def output_ys(self, x):
         y = self.forward(x)
         return y, y
 
@@ -1015,7 +1015,7 @@ class NP2TH(Processor):
     def __init__(self, dtype: th.dtype=th.float32):
         self.dtype = dtype
 
-    def layer_outs(self, x):
+    def output_ys(self, x):
         y = self.forward(x)
         return y, y
 
@@ -1036,11 +1036,11 @@ class CompositeProcessor(Processor):
 
         self.processors = processors
 
-    def layer_outs(self, x):
+    def output_ys(self, x):
         outs = [x]
         y = x
         for processor in self.processors:
-            y, outs_i = processor.layer_outs(y)
+            y, outs_i = processor.output_ys(y)
             outs.append(outs_i)
         return y, outs
 
@@ -1053,7 +1053,7 @@ class CompositeProcessor(Processor):
     def backward(self, x, t, outs=None):
 
         if outs is None:
-            _, outs = self.layer_outs(x)
+            _, outs = self.output_ys(x)
         
         xs = outs[:-1]
         for x_i, y_i, processor in zip(
@@ -1078,7 +1078,7 @@ class Processed(Machine):
     
     def assess(self, y, t):
         # if not outs:
-        #     y, outs = self.layer_outs(x)
+        #     y, outs = self.output_ys(x)
         # # if outs is None:
         # #     y = self.forward(x)
         # # else:
@@ -1086,10 +1086,10 @@ class Processed(Machine):
         # y = self.processors.get_y_out(outs[0])
         return self.machine.assess(y, t)
     
-    def layer_outs(self, x):
-        y, outs_i = self.processors.layer_outs(x)
+    def output_ys(self, x):
+        y, outs_i = self.processors.output_ys(x)
         # y = outs[-1] if outs[-1] is not None else x
-        y, outs_j = self.machine.layer_outs(y)
+        y, outs_j = self.machine.output_ys(y)
         return y, [outs_i, outs_j]
 
     def forward(self, x):
@@ -1102,7 +1102,7 @@ class Processed(Machine):
 
     def backward_update(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
         if outs is None:
-            _, outs = self.layer_outs(x)
+            _, outs = self.output_ys(x)
 
         y_in = self.processors.get_y_out(outs[0])
         t = self.machine.backward_update(y_in, t, outs[1], update, update_inputs)
