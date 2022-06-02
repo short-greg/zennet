@@ -696,10 +696,6 @@ class TorchNN(Machine):
         self._fixed = fixed
 
     def assess(self, y, t):
-        # if outs is None:
-        #     y = self._objective(x)
-        # else:
-        #     y = outs[1]
         return self._objective(y, t)
 
     def fix(self, fixed: bool=True):
@@ -724,11 +720,12 @@ class TorchNN(Machine):
     
     def forward_update(self, x, t, scorer: Scorer=None, update: bool=True):
 
-        if update:
+        if update and not self._fixed:
             self._updater.update_theta(t, x, scorer=scorer)
             nn_utils.vector_to_parameters(self._updater.theta, self._module.parameters())
+        
         y = self.forward(x)
-        return y, self.assess(y, t)
+        return y
 
     def backward_update(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
         if outs is not None:
@@ -787,7 +784,7 @@ class SklearnMachine(Machine):
         if update:
             self._updater.update_theta(t, x, scorer=scorer)
         y = self.forward(x)
-        return y, self.assess(y, t)
+        return y
         
     def get_y_out(self, outs):
         return outs[1]
@@ -873,7 +870,7 @@ class BlackboxMachine(Machine):
 
     def forward_update(self, x, t, scorer: Scorer=None, update: bool=True):
         y = self.forward(x)
-        return y, self.assess(y, t)
+        return y
 
     def get_y_out(self, outs):
         return outs[1]
@@ -890,19 +887,20 @@ class BlackboxMachine(Machine):
 
 class SequenceScorer(Scorer):
 
-    def __init__(self, machines: typing.List[Machine], outer: Scorer=None):
+    def __init__(self, machines: typing.List[Machine], t: th.Tensor, outer: Scorer=None):
 
         if len(machines) == 0:
             raise RuntimeError("The number of machines must be greater than 0.")
         self._machines = machines
         self._outer = outer
+        self._t = t
 
-    def assess(self, x, t):
+    def assess(self, x):
         for machine in self._machines:
             x = machine.forward(x)
         if self._outer:
             return self._outer.assess(x)
-        return self._machines[-1].assess(x, t)
+        return self._machines[-1].assess(x, self._t)
 
     @property
     def maximize(self):
@@ -917,9 +915,7 @@ class Sequence(Machine):
             raise ValueError(f'Length of sequence must be greater than 0')
         self.machines = machines
     
-    def assess(self, y, t): # , outs=None):
-        # if outs is None:
-        #     _, outs = self.output_ys(x)
+    def assess(self, y, t):
         
         return self.machines[-1].assess(
             y, t
@@ -948,18 +944,17 @@ class Sequence(Machine):
     def forward_update(self, x, t, scorer: Scorer=None, update: bool=True):
         if not update:
             y = self.forward(x)
-            return y, self.assess(y, t)
+            return y
 
         y = x
         for i, machine in enumerate(self.machines):
-            following = self.machines[i:]
-            if i < len(self.machines):
-                cur_scorer = SequenceScorer(following, scorer)
+            if i < len(self.machines) - 1:
+                cur_scorer = SequenceScorer(self.machines[i + 1:], t, scorer)
             else:
                 cur_scorer = scorer
-            y, loss = machine.forward_update(y, t, cur_scorer, update)
+            y = machine.forward_update(y, t, cur_scorer, update)
 
-        return y, loss
+        return y
 
     def backward_update(self, x, t, outs=None, update: bool=True, update_inputs: bool= True):
         if outs is None:
@@ -1077,13 +1072,6 @@ class Processed(Machine):
         self.machine = machine
     
     def assess(self, y, t):
-        # if not outs:
-        #     y, outs = self.output_ys(x)
-        # # if outs is None:
-        # #     y = self.forward(x)
-        # # else:
-        # #     y = self.machine.get_y_out(outs[1])
-        # y = self.processors.get_y_out(outs[0])
         return self.machine.assess(y, t)
     
     def output_ys(self, x):

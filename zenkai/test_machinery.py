@@ -1,4 +1,5 @@
 from re import X
+import typing
 from . import machinery as mac
 import torch.nn as nn
 import torch as th
@@ -176,6 +177,7 @@ class TestHillClimbingOptimizer:
         optimizer.update_inputs(t=th.rand(2, 2))
         assert (optimizer.inputs != best).any()
 
+
 class TestNRepeatOptimizer:
 
     def test_update_theta_with_one_perturbation(self):
@@ -218,6 +220,85 @@ class TestTHOptimBuilder:
         assert isinstance(optimizer, mac.HillClimberOptimizer)
 
 
+class TestTorchNN:
+
+    def _build_layer_and_machine(self) -> typing.Tuple[mac.TorchNN, th.nn.Module, mac.Objective]:
+        layer = nn.Sequential(
+            nn.Linear(2, 2),
+            nn.Sigmoid()
+        )
+
+        objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
+        optim = mac.SingleOptimBuilder()# .step_hill_climber()
+        machine = mac.TorchNN(layer, objective, optim)
+
+        return machine, layer, objective
+
+    def test_backward_update_does_not_update_when_fixed(self):
+        th.manual_seed(1)
+        machine, layer, objective = self._build_layer_and_machine()
+        machine.fix()
+        before = next(layer.parameters()).clone()
+        x = th.rand(3, 2)
+        t = th.rand(3, 2)
+        machine.backward_update(x, t)
+        after = next(layer.parameters()).clone()
+        assert (before == after).all()
+
+    def test_backward_updates_when_not_fixed(self):
+        th.manual_seed(1)
+        machine, layer, objective = self._build_layer_and_machine()
+        before = next(layer.parameters()).clone()
+        x = th.rand(3, 2)
+        t = th.rand(3, 2)
+        machine.backward_update(x, t)
+        after = next(layer.parameters()).clone()
+        assert (before != after).any()
+
+    def test_forward_update_updates_without_scorer(self):
+        th.manual_seed(1)
+        machine, layer, objective = self._build_layer_and_machine()
+        before = next(layer.parameters()).clone()
+        x = th.rand(3, 2)
+        t = th.rand(3, 2)
+        machine.backward_update(x, t)
+        after = next(layer.parameters()).clone()
+        assert (before != after).any()
+
+    def test_forward_update_updates_with_scorer(self):
+
+        class ScorerX(mac.Scorer):
+            
+            def __init__(self, t: th.Tensor):
+                self.t = t
+
+            def assess(self, x: th.Tensor):
+                return ((x - self.t) ** 2).mean()
+
+            @property
+            def maximize(self):
+                return False
+        th.manual_seed(1)
+        machine, layer, objective = self._build_layer_and_machine()
+        before = next(layer.parameters()).clone()
+        x = th.rand(3, 2)
+        t = th.rand(3, 2)
+        machine.forward_update(x, t, scorer=ScorerX(t))
+        after = next(layer.parameters()).clone()
+        assert (before != after).any()
+
+    def test_forward_update_does_not_update_when_fixed(self):
+        th.manual_seed(1)
+        machine, layer, objective = self._build_layer_and_machine()
+        machine.fix()
+        before = next(layer.parameters()).clone()
+        x = th.rand(3, 2)
+        t = th.rand(3, 2)
+        machine.forward_update(x, t)
+        after = next(layer.parameters()).clone()
+        assert (before == after).all()
+
+
 class TestProcessed:
 
     def _build_layer_and_machine(self, processors: list):
@@ -254,8 +335,7 @@ class TestProcessed:
         x = np.zeros((3, 2))
         t = th.rand(3, 2)
         target = loss(layer.forward(th.tensor(x, dtype=th.float32)), t)
-        _, result = machine.forward_update(x, t, update=False)
-        print(result, target)
+        result = machine.assess(machine.forward(x), t)
         assert (result == target).all()
 
     def test_torch_nn_backward_with_linear_plus_sigmoid(self):
@@ -272,23 +352,23 @@ class TestProcessed:
         x = th.zeros(3, 2)
         t = th.rand(3, 2)
         target = loss(layer.forward(x), t)
-        _, result = machine.forward_update(x, t, update=False)
+        result = machine.assess(machine.forward(x), t)
         assert (result == target).all()
 
 class TestSequence:
 
     def _build_layer_and_machine(self):
         layer1 = nn.Sequential(
-            nn.Linear(2, 2),
+            nn.Linear(2, 3),
             nn.Sigmoid()
         )
         layer2 = nn.Sequential(
-            nn.Linear(2, 2),
+            nn.Linear(3, 2),
             nn.Sigmoid()
         )
 
         objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
-        optim = mac.SingleOptimBuilder().grad()
+        optim = mac.SingleOptimBuilder().step_hill_climber()
         optim2 = mac.SingleOptimBuilder().grad()
 
         machine = mac.TorchNN(layer1, objective, optim)
@@ -309,7 +389,7 @@ class TestSequence:
         x = th.zeros((3, 2))
         t = th.rand(3, 2)
         target = loss2(layer2(layer1(x)), t)
-        _, result = machine.forward_update(x, t, update=False)
+        result = machine.assess(machine.forward(x), t)
         assert (result == target).all()
 
     def test_torch_nn_backward_with_linear_plus_sigmoid(self):
@@ -320,3 +400,35 @@ class TestSequence:
         t = th.rand(3, 2)
         x_t = machine.backward_update(x, t, update=False)
         assert (x_t.shape == x.shape)
+
+
+    def test_sequence_forward_update_updates_with_no_scorer(self):
+
+        class ScorerX(mac.Scorer):
+            
+            def __init__(self, t: th.Tensor):
+                self.t = t
+
+            def assess(self, x: th.Tensor):
+                return ((x - self.t) ** 2).mean()
+
+            @property
+            def maximize(self):
+                return False
+        th.manual_seed(4)
+
+        machine, layer1, layer2, loss1, loss2 = self._build_layer_and_machine()
+        th.manual_seed(1)
+        x = th.zeros((3, 2), requires_grad=True)
+        x.retain_grad()
+        t = th.rand(3, 2)
+
+        before = next(layer1.parameters()).clone()
+        before2 = next(layer2.parameters()).clone()
+        machine.forward_update(x, t)
+        after = next(layer1.parameters()).clone()
+        after2 = next(layer2.parameters()).clone()
+        
+        # TODO: For some reason i cannot get grad optimizer to work with this
+        assert (before2 != after2).any()
+        assert (before != after).any()
