@@ -712,6 +712,9 @@ class THXPBuilder(object):
         p_updater = self._p_builder(net, loss)
         return XPOptimizer(x_updater, p_updater)
 
+def to_float(x: typing.List[th.Tensor]):
+    return list(map(lambda xi: xi.mean().item(), x))
+
 
 class TorchNN(Machine):
 
@@ -751,7 +754,8 @@ class TorchNN(Machine):
             self._updater.update_theta(t, x, scorer=scorer)
             if recorder:
                 recorder.record_theta(
-                    id(self), nn_utils.parameters_to_vector(self._module.parameters()), self._updater.theta
+                    id(self), nn_utils.parameters_to_vector(self._module.parameters()), self._updater.theta,
+                    to_float(self._updater.evaluations)
                 )
             nn_utils.vector_to_parameters(self._updater.theta, self._module.parameters())
         
@@ -772,7 +776,9 @@ class TorchNN(Machine):
         
             if recorder:
                 recorder.record_theta(
-                    id(self), nn_utils.parameters_to_vector(self._module.parameters()), self._updater.theta
+                    id(self), nn_utils.parameters_to_vector(self._module.parameters()), 
+                    self._updater.theta,
+                    evaluations=to_float(self._updater.evaluations)
                 )
             nn_utils.vector_to_parameters(self._updater.theta, self._module.parameters())
         
@@ -781,7 +787,8 @@ class TorchNN(Machine):
             
             if recorder:
                 recorder.record_inputs(
-                    id(self), x, self._updater.inputs
+                    id(self), x, self._updater.inputs,
+                    evaluations=to_float(self._updater.evaluations)
                 )
             return self._updater.inputs
 

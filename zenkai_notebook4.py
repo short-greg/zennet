@@ -89,12 +89,13 @@ class SimpleClassification(Dataset):
 
     def __init__(self, shuffle=True, batch_size: int=128):
         X, t = make_classification(
-            n_samples=20000, n_features=2, n_redundant=0, n_informative=2, 
+            n_samples=2000, n_features=2, n_redundant=0, n_informative=2, 
             n_clusters_per_class=1, n_classes=3
         )   
 
         super().__init__(X, t, shuffle, batch_size)
 
+recorder = machinery.EuclidRecorder()
 
 
 # objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
@@ -135,7 +136,7 @@ batch_size = 128
 
 # n_iterations = len(X) // batch_size
 losses = []
-n_epochs = 10
+n_epochs = 1
 
 blobs = SimpleClassification(batch_size=128)
 
@@ -150,12 +151,15 @@ for _ in range(n_epochs):
             y, ys = sequence.output_ys(x_i)
             assessment = sequence.assess(y, t_i)
             losses.append(assessment.item())
-            sequence.forward_update(x_i, t_i, update_theta=True)
+            sequence.forward_update(x_i, t_i, update_theta=True, recorder=recorder)
             # print(next(layer1.module.parameters()))
+            recorder.adv()
             tq.set_postfix({'Loss': statistics.mean(losses[-20:])}, refresh=True)
             tq.update(1)
         
 
+print(recorder.input_df)
+print(recorder.theta_df)
 print(losses)
 
 # layer = machinery.Processed(
