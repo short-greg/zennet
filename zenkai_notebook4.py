@@ -106,8 +106,8 @@ objective1 = machinery.LossObjective(nn.MSELoss, reduction=machinery.MeanReducti
 net1 = nn.Sequential(nn.Linear(2, 4), nn.Sigmoid())
 net2 = nn.Sequential(nn.Linear(4, 3))
 builder = machinery.THXPBuilder(
-    machinery.SingleOptimBuilder().step_hill_climber(momentum=None, std=0.2, update_after=600).repeat(2),
-    machinery.SingleOptimBuilder().step_hill_climber(momentum=None, update_after=400)
+    machinery.SingleOptimBuilder().step_hill_climber().repeat(4), # step_hill_climber(momentum=None, std=0.2, update_after=600).repeat(40),
+    machinery.SingleOptimBuilder().step_hill_climber(momentum=None, update_after=400).repeat(10)
 )
 
 
@@ -147,10 +147,10 @@ for _ in range(n_epochs):
             x_i = th.tensor(x_i, dtype=th.float32)
             t_i = th.tensor(t_i, dtype=th.int64).view(-1)
             # t_i = t_processor.forward(t_i)
-            y, ys = sequence.update_outs(x_i)
-            assessment = sequence.assess(x_i, t_i, ys)
+            y, ys = sequence.output_ys(x_i)
+            assessment = sequence.assess(y, t_i)
             losses.append(assessment.item())
-            sequence.backward(x_i, t_i, ys, update_inputs=False)
+            sequence.forward_update(x_i, t_i, update_theta=True)
             # print(next(layer1.module.parameters()))
             tq.set_postfix({'Loss': statistics.mean(losses[-20:])}, refresh=True)
             tq.update(1)

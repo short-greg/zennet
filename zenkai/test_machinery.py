@@ -343,7 +343,7 @@ class TestProcessed:
         th.manual_seed(1)
         x = np.zeros((3, 2))
         t = th.rand(3, 2)
-        x_t = machine.backward_update(x, t, update=False)
+        x_t = machine.backward_update(x, t, update_theta=False)
         assert (x_t.shape == x.shape)
 
     def test_torch_nn_forward_with_linear_plus_sigmoid_with_no_processor(self):
@@ -398,7 +398,7 @@ class TestSequence:
         x = th.zeros((3, 2), requires_grad=True)
         x.retain_grad()
         t = th.rand(3, 2)
-        x_t = machine.backward_update(x, t, update=False)
+        x_t = machine.backward_update(x, t, update_theta=False)
         assert (x_t.shape == x.shape)
 
 
@@ -432,3 +432,50 @@ class TestSequence:
         # TODO: For some reason i cannot get grad optimizer to work with this
         assert (before2 != after2).any()
         assert (before != after).any()
+
+
+class TestEuclidRecorder:
+
+    def test_records_inputs_new_values(self):
+
+        recorder = mac.EuclidRecorder()
+        recorder.record_inputs(1, th.rand(2), th.rand(2), th.tensor(0.2))
+        assert recorder.pos == 0
+
+    def test_records_inputs_new_values_after_adv(self):
+
+        recorder = mac.EuclidRecorder()
+        recorder.adv()
+        recorder.record_inputs(1, th.rand(2), th.rand(2), th.tensor(0.2))
+        assert recorder.pos == 1
+
+    def test_get_input_df_after_adv(self):
+
+        recorder = mac.EuclidRecorder()
+        recorder.record_inputs(1, th.rand(2), th.rand(2), [0.2])
+        assert len(recorder.input_df) == 1
+
+    def test_records_theta_new_values(self):
+
+        recorder = mac.EuclidRecorder()
+        recorder.record_theta(1, th.rand(2), th.rand(2), th.tensor(0.2))
+        assert recorder.pos == 0
+
+    def test_records_theta_new_values_after_adv(self):
+
+        recorder = mac.EuclidRecorder()
+        recorder.adv()
+        recorder.record_theta(1, th.rand(2), th.rand(2), th.tensor(0.2))
+        assert recorder.pos == 1
+
+    def test_get_theta_df_(self):
+
+        recorder = mac.EuclidRecorder()
+        recorder.record_theta(1, th.rand(2), th.rand(2), [0.2])
+        assert len(recorder.theta_df) == 1
+
+    def test_get_inputs_df_after_add_theta(self):
+
+        recorder = mac.EuclidRecorder()
+        recorder.record_theta(1, th.rand(2), th.rand(2), [0.2])
+        assert len(recorder.input_df) == 0
