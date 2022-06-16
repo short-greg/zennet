@@ -223,7 +223,6 @@ class StepHillClimberProcessor(HillClimberProcessor):
     def __init__(self, s_mean: int=-2, s_std=1, k: int=1, momentum: float=None, maximize: bool=True, update_after: int=20):
         self.s_mean = s_mean
         self.s_std = s_std
-
         self.k = k
         self.maximize = maximize
         self._momentum = momentum
@@ -304,7 +303,13 @@ class HillClimberOptimizer(TorchOptimizer):
         self._inputs_diff = None
         self._theta_diff = None
         self._x = None
-        self._theta = nn_utils.parameters_to_vector(self._net.parameters())
+        try:
+            self._theta = nn_utils.parameters_to_vector(self._net.parameters())
+        except NotImplementedError:
+            # in some cases the list will be empty
+            # such as when an sklearn module will be used. This will
+            # raise a notimplementederror
+            self._theta = None
 
     def reset_inputs(self, inputs):
         self._inputs = inputs
@@ -425,20 +430,25 @@ class SKLearnOptimizer(Optimizer):
     
     def reset_inputs(self, inputs):
         self._input_optimizer.reset_inputs(inputs)
+        self._inputs = inputs
 
     def reset_theta(self, theta):
         pass
 
     def update_theta(self, t, inputs=None, theta=None, y=None, scorer: Scorer=None):
 
+        if inputs is not None:
+            self.reset_inputs(inputs)
         if self._fitted:
             self._evaluations = th.tensor(self._machine.score(self._inputs, t))
         else:
-            self._evaluations = None
+            self._evaluations = []
+        inputs = self._inputs.detach().cpu().numpy()
+        t = t.detach().cpu().numpy()
         if self._partial_fit:
-            self._machine.partial_fit(self._inputs, t)
+            self._machine.partial_fit(inputs, t)
         else:
-            self._machine.fit(self._inputs, t)
+            self._machine.fit(inputs, t)
         
         self._fitted = True
 

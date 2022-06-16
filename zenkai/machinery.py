@@ -263,10 +263,11 @@ class SklearnMachine(Machine):
 
     def __init__(self, machine, out_size: typing.Tuple, loss, updater: SKOptimBuilder=None, fixed: bool=False, partial: bool=False):
         super().__init__()
-        self._machine = machine # multioutput.MultiOutputRegressor(machine)
+        # multioutput.MultiOutputRegressor(machine)
+        self._machine = machine
         self._loss = loss
         self._out_size = out_size
-        self._updater = updater(self._machines)
+        self._updater = updater(self._machine, loss)
         self._fixed = fixed
         self._partial = partial
         self._fit = False
@@ -326,7 +327,6 @@ class SklearnMachine(Machine):
                     evaluations=to_float(self._updater.evaluations)
                 )
             return self._updater.inputs
-
 
 
 class BlackboxMachine(Machine):

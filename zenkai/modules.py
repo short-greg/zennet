@@ -8,7 +8,7 @@ import torch as th
 class SKLearnModule(nn.Module):
 
     def __init__(self, machine):
-
+        super().__init__()
         self._machine = machine
     
     def forward(self, x: torch.Tensor):

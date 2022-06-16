@@ -1,4 +1,6 @@
 from functools import partial
+import sklearn.linear_model
+import sklearn.multioutput
 from . import optimization
 import torch.nn as nn
 from . import modules
@@ -200,3 +202,24 @@ class TestNRepeatOptimizer:
         optimizer.update_theta(t=th.rand(2, 2), inputs=th.rand(2, 2))
         assert len(optimizer.evaluations) == 3
 
+
+
+class TestSKLearnOptimizer:
+
+    def _build(self):
+        objective = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
+
+        regressor = sklearn.linear_model.LinearRegression()
+        regressor = sklearn.multioutput.MultiOutputRegressor(regressor)
+        net = modules.SKLearnModule(regressor)
+
+        input_optimizer = optimization.HillClimberOptimizer(
+            net, objective, processor=optimization.StepHillClimberProcessor(k=1)
+        )
+        return optimization.SKLearnOptimizer(regressor, input_optimizer, False)
+
+    def test_sklearn_optimizer_with_fit(self):
+
+        optimizer = self._build()
+        optimizer.update_theta(t=th.rand(3, 2), inputs=th.rand(3, 2))
+        assert len(optimizer.evaluations) == 0

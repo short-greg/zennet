@@ -24,6 +24,7 @@ class TestSklearnModule:
         module = modules.SKLearnModule(machine)
         assert module.forward(torch.rand(3, 3)).size() == torch.Size([3, 3])
 
+
 class TestLossObjective:
 
     def test_loss_objective_maximize_is_false_with_mse(self):
