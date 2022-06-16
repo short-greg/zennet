@@ -2,7 +2,7 @@ import typing
 import numpy as np
 import torch
 from dataclasses import dataclass
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, abstractproperty
 
 
 @dataclass
@@ -20,8 +20,7 @@ class TorchSignalType(SignalType):
 
 class Signal(ABC):
 
-    @abstractmethod
-    @property
+    @abstractproperty
     def signal_type(self) -> SignalType:
         pass
 
@@ -89,7 +88,7 @@ class NumpySignal(Signal):
 @dataclass
 class Port(ABC):
 
-    @property
+    @abstractproperty
     def signal_type(self) -> SignalType:
         pass
 
