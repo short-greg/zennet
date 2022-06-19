@@ -339,8 +339,10 @@ class HillClimberOptimizer(TorchOptimizer):
         return evaluations
     
     def _update_inputs(self, t, y=None, scorer: Scorer=None):
+
         inputs = self.input_processor(self._inputs)
-        y = self._net(inputs)
+        y = self._net(inputs.view(-1, *inputs.shape[2:]))
+        y = y.view(inputs.shape[0], inputs.shape[1], *y.shape[1:])
         if scorer is None:
             evaluations = self._objective.forward_multi(y, t)
         else:
@@ -418,7 +420,7 @@ class NRepeatOptimizer(RepeatOptimizer):
 
 class SKLearnOptimizer(Optimizer):
 
-    def __init__(self, machine, input_optimizer: TorchOptimizer, partial_fit: bool=False):
+    def __init__(self, machine: SKLearnModule, input_optimizer: TorchOptimizer, partial_fit: bool=False):
         super().__init__()
         self._machine = machine
         self._input_optimizer = input_optimizer
@@ -439,18 +441,17 @@ class SKLearnOptimizer(Optimizer):
 
         if inputs is not None:
             self.reset_inputs(inputs)
-        if self._fitted:
-            self._evaluations = th.tensor(self._machine.score(self._inputs, t))
+        
+        score = self._machine.score(self._inputs, t)
+        if score is not None:
+            self._evaluations = [th.tensor(score)]
         else:
             self._evaluations = []
-        inputs = self._inputs.detach().cpu().numpy()
-        t = t.detach().cpu().numpy()
+
         if self._partial_fit:
             self._machine.partial_fit(inputs, t)
         else:
             self._machine.fit(inputs, t)
-        
-        self._fitted = True
 
     def update_inputs(self, t, inputs=None, theta=None, y=None, scorer: Scorer=None):
         self._input_optimizer.update_inputs(t, inputs, theta, y, scorer=scorer)
@@ -539,10 +540,10 @@ class SKOptimBuilder(object):
     def partial_fit(self, to_partial_fit: bool=True):
         self._partial_fit = to_partial_fit
 
-    def __call__(self, machine, loss) -> Optimizer:
+    def __call__(self, module: SKLearnModule, loss) -> Optimizer:
         
         return SKLearnOptimizer(
-            machine, self._x_builder(SKLearnModule(machine), loss), self._partial_fit)
+            module, self._x_builder(module, loss), self._partial_fit)
 
 
 class BlackboxOptimBuilder:

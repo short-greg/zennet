@@ -5,6 +5,8 @@ import statistics
 import sys
 import typing
 import tqdm
+import sklearn.multioutput
+from torchvision import transforms
 
 from sklearn import multioutput
 
@@ -17,7 +19,7 @@ def set_env():
 set_env()
 
 from functools import partial
-from zenkai import machinery
+from zenkai import machinery, modules, optimization
 import sklearn
 import torch as th
 import torch.nn as nn
@@ -41,32 +43,36 @@ recorder = machinery.EuclidRecorder()
 # net = nn.Linear(2, 2)
 # optimizer = mac.THOptimBuilder().hill_climber()(net, objective)
 
-objective2 = machinery.LossObjective(nn.CrossEntropyLoss, reduction=machinery.MeanReduction())
-objective1 = machinery.LossObjective(nn.MSELoss, reduction=machinery.MeanReduction())
+objective2 = modules.LossObjective(nn.CrossEntropyLoss, reduction=modules.MeanReduction())
+objective1 = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
 # net1 = nn.Sequential(nn.Linear(2, 4), nn.Sigmoid())
 net2 = nn.Sequential(nn.Linear(8, 10))
-builder = machinery.THXPBuilder(
-    machinery.SingleOptimBuilder().step_hill_climber().repeat(4), # step_hill_climber(momentum=None, std=0.2, update_after=600).repeat(40),
-    machinery.SingleOptimBuilder().step_hill_climber(momentum=None, update_after=400).repeat(10)
+builder2 = optimization.THXPBuilder(
+    optimization.SingleOptimBuilder().grad().repeat(10), # step_hill_climber(momentum=None, std=0.2, update_after=600).repeat(40),
+    optimization.SingleOptimBuilder().grad()
 )
-
+builder = optimization.SKOptimBuilder(
+    optimization.SingleOptimBuilder().step_hill_climber().repeat(4)
+)
 
 # sequence = machinery.TorchNN(
 #     nn.Sequential(net1, net2), objective2, builder
 # )
 from sklearn import svm
 
-layer1_machines = []
-for i in range(8):
-    layer1_machines.append(svm.SVR())
 
+# for i in range(8):
+#    layer1_machines.append(svm.SVR())
+machine = sklearn.multioutput.MultiOutputRegressor(
+    svm.SVR(kernel='rbf', epsilon=0.05)
+)
 
 layer1 = machinery.SklearnMachine(
-    layer1_machines, objective1, builder
+    modules.SKLearnModule(machine, 784, 8),  objective1, builder
 )
 
 layer2 = machinery.TorchNN(
-    net2, objective2, builder
+    net2, objective2, builder2
 )
 
 
@@ -75,9 +81,9 @@ sequence = machinery.Sequence(
 )
 # sequence = layer2
 # print('result: ', layer1.backward(X, t))
+#%%
 
-
-batch_size = 2048
+batch_size = 256
 
 # n_iterations = len(X) // batch_size
 losses = []
@@ -85,17 +91,17 @@ n_epochs = 20
 transform = transforms.Compose([transforms.ToTensor()])
 
 # blobs = SimpleClassification(batch_size=batch_size)
-mnist_trainset = MNIST(root='./data', train=True, download=True, transform=None)
+mnist_trainset = MNIST(root='./data', train=True, download=True, transform=transform)
 import torch.utils.data as data_utils
 
-dataloader = data_utils.DataLoader(mnist_trainset, shuffle=True)
+dataloader = data_utils.DataLoader(mnist_trainset, shuffle=True, batch_size=batch_size)
 
 for _ in range(n_epochs):
     with tqdm.tqdm(total=len(dataloader)) as tq:   
         for x_i, t_i in dataloader:
 
-            x_i = th.tensor(x_i, dtype=th.float32) / 255.0
-            t_i = th.tensor(t_i, dtype=th.int64).view(-1)
+            x_i = x_i.view(x_i.shape[0], -1).float() # / 255.0
+            t_i = t_i.long().view(-1)
             # t_i = t_processor.forward(t_i)
             y, ys = sequence.output_ys(x_i)
             assessment = sequence.assess(y, t_i)

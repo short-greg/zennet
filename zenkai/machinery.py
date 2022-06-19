@@ -15,6 +15,8 @@ import numpy as np
 import torch.nn.utils as nn_utils
 from copy import deepcopy
 import pandas as pd
+
+from zenkai.modules import SKLearnModule
 from .optimization import (
     BlackboxOptimBuilder, GradOptimizer, HillClimberOptimizer, 
     NRepeatOptimizer, Optimizer, SKOptimBuilder, 
@@ -261,13 +263,11 @@ class TorchNN(Machine):
 
 class SklearnMachine(Machine):
 
-    def __init__(self, machine, out_size: typing.Tuple, loss, updater: SKOptimBuilder=None, fixed: bool=False, partial: bool=False):
+    def __init__(self, module: SKLearnModule, loss, updater: SKOptimBuilder=None, fixed: bool=False, partial: bool=False):
         super().__init__()
-        # multioutput.MultiOutputRegressor(machine)
-        self._machine = machine
+        self._module = module
         self._loss = loss
-        self._out_size = out_size
-        self._updater = updater(self._machine, loss)
+        self._updater = updater(self._module, loss)
         self._fixed = fixed
         self._partial = partial
         self._fit = False
@@ -289,16 +289,21 @@ class SklearnMachine(Machine):
 
     def forward(self, x: th.Tensor):
         device = x.device
-        if not self._fit:
-            return th.randn(x.shape[0], *self._out_size[1:])
-
-        x_np = x.detach().cpu().numpy()
-        y_np = self._machine.predict(x_np)
-        # y_np = np.stack([machine.predict(x_np) for machine in self._machines])
-        return th.tensor(y_np, device=device)
+        y_np = self._module.forward(x)
+        return y_np.to(device)
 
     def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+        """forward update on the module. SKLearn Module cannot be updated on Forward update
 
+        Args:
+            x (_type_): _description_
+            t (_type_): _description_
+            scorer (Scorer, optional): Has no effect on SKLearn module. Defaults to None.
+            update_theta (bool, optional): Whether to update the paramters. Defaults to True.
+
+        Returns:
+            output: _description_
+        """
         y = self.forward(x)
         return y
         
@@ -309,14 +314,9 @@ class SklearnMachine(Machine):
         return outs[0]
     
     def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, recorder: Recorder=None):
-
+        
         if update_theta and not self._fixed:
-            # score = self._machine.score(x, t)
-            if self._partial:
-                self._machine.partial_fit(x, t)
-            else:
-                self._machine.fit(x, t)
-            self._fit = True
+            self._updater.update_theta(t, inputs=x)
         
         if update_inputs:
             self._updater.update_inputs(t, inputs=x)
@@ -595,7 +595,6 @@ class WeightedLoss(nn.Module):
     def forward(self, x, t):
 
         return self.weight * self.nn_loss(x, t)
-
 
 
 class EuclidRecorder(Recorder):
