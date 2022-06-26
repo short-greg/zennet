@@ -16,7 +16,7 @@ import torch.nn.utils as nn_utils
 from copy import deepcopy
 import pandas as pd
 
-from zenkai.modules import SKLearnModule
+from .modules import SklearnModule
 from .optimization import (
     BlackboxOptimBuilder, GradOptimizer, HillClimberOptimizer, 
     NRepeatOptimizer, Optimizer, SKOptimBuilder, 
@@ -161,11 +161,11 @@ class Machine(ABC):
         pass
 
     @abstractmethod
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True, recorder: Recorder=None):
+    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
         pass
 
     @abstractmethod
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, recorder: Recorder=None):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         pass
 
     @abstractmethod
@@ -182,12 +182,13 @@ def to_float(x: typing.List[th.Tensor]):
 
 class TorchNN(Machine):
 
-    def __init__(self, module: nn.Module, objective: Objective, updater: THOptimBuilder=None, fixed: bool=False):
+    def __init__(self, module: nn.Module, objective: Objective, updater: THOptimBuilder=None, fixed: bool=False, recorder: Recorder=None):
         
         self._module = module
         self._objective = objective
         self._updater = updater(module, objective) or GradOptimizer (module, objective)
         self._fixed = fixed
+        self._recorder = recorder
 
     def assess(self, y, t):
         return self._objective(y, t)
@@ -208,16 +209,14 @@ class TorchNN(Machine):
         return outs[0]
 
     def forward(self, x):
-        # x = x.detach().requires_grad_()
-        # x.retain_grad()
         return self._module.forward(x)
     
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True, recorder: Recorder=None):
+    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
 
         if update_theta and not self._fixed:
             self._updater.update_theta(t, x, scorer=scorer)
-            if recorder:
-                recorder.record_theta(
+            if self._recorder:
+                self._recorder.record_theta(
                     id(self), nn_utils.parameters_to_vector(self._module.parameters()), self._updater.theta,
                     to_float(self._updater.evaluations)
                 )
@@ -226,7 +225,7 @@ class TorchNN(Machine):
         y = self.forward(x)
         return y
 
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, recorder: Recorder=None):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         if outs is not None:
             y = self.get_y_out(outs)
             x = self.get_in(outs)
@@ -238,8 +237,8 @@ class TorchNN(Machine):
         if update_theta and not self._fixed:
             self._updater.update_theta(t, y=y, inputs=x)
         
-            if recorder:
-                recorder.record_theta(
+            if self._recorder:
+                self._recorder.record_theta(
                     id(self), nn_utils.parameters_to_vector(self._module.parameters()), 
                     self._updater.theta,
                     evaluations=to_float(self._updater.evaluations)
@@ -247,10 +246,11 @@ class TorchNN(Machine):
             nn_utils.vector_to_parameters(self._updater.theta, self._module.parameters())
         
         if update_inputs:
-            self._updater.update_inputs(t, y=y, inputs=x)
+            self._updater.reset_inputs(x)
+            self._updater.update_inputs(t, y=y)
             
-            if recorder:
-                recorder.record_inputs(
+            if self._recorder:
+                self._recorder.record_inputs(
                     id(self), x, self._updater.inputs,
                     evaluations=to_float(self._updater.evaluations)
                 )
@@ -263,7 +263,7 @@ class TorchNN(Machine):
 
 class SklearnMachine(Machine):
 
-    def __init__(self, module: SKLearnModule, loss, updater: SKOptimBuilder=None, fixed: bool=False, partial: bool=False):
+    def __init__(self, module: SklearnModule, loss, updater: SKOptimBuilder=None, fixed: bool=False, partial: bool=False, recorder: Recorder=None):
         super().__init__()
         self._module = module
         self._loss = loss
@@ -271,6 +271,7 @@ class SklearnMachine(Machine):
         self._fixed = fixed
         self._partial = partial
         self._fit = False
+        self._recorder = recorder
 
     def fix(self, fixed: bool=True):
         self._fixed = fixed
@@ -313,7 +314,7 @@ class SklearnMachine(Machine):
     def get_in(self, outs):
         return outs[0]
     
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, recorder: Recorder=None):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         
         if update_theta and not self._fixed:
             self._updater.update_theta(t, inputs=x)
@@ -321,8 +322,8 @@ class SklearnMachine(Machine):
         if update_inputs:
             self._updater.update_inputs(t, inputs=x)
             
-            if recorder:
-                recorder.record_inputs(
+            if self._recorder:
+                self._recorder.record_inputs(
                     id(self), x, self._updater.inputs,
                     evaluations=to_float(self._updater.evaluations)
                 )
@@ -351,7 +352,7 @@ class BlackboxMachine(Machine):
     def forward(self, x: th.Tensor):
         return self._f(x)
 
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True, recorder: Recorder=None):
+    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
         y = self.forward(x)
         return y
 
@@ -361,7 +362,7 @@ class BlackboxMachine(Machine):
     def get_in(self, outs):
         return outs[0]
     
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, recorder: Recorder=None):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         
         if update_inputs:
             self._input_updater.update_inputs(t, inputs=x)
@@ -424,7 +425,7 @@ class Sequence(Machine):
             y = layer.forward(y)
         return y
 
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True, recorder: Recorder=None):
+    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
         if not update_theta:
             y = self.forward(x)
             return y
@@ -435,11 +436,11 @@ class Sequence(Machine):
                 cur_scorer = SequenceScorer(self.machines[i + 1:], t, scorer)
             else:
                 cur_scorer = scorer
-            y = machine.forward_update(y, t, cur_scorer, update_theta, recorder)
+            y = machine.forward_update(y, t, cur_scorer, update_theta)
 
         return y
 
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, recorder: Recorder=None):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         if outs is None:
             _, outs = self.output_ys(x)
         
@@ -449,7 +450,7 @@ class Sequence(Machine):
 
         for i, (x_i, y_i, machine) in enumerate(zip(reversed(xs), reversed(outs[1:]), reversed(self.machines))):
             _update_inputs = i < len(xs) or update_inputs
-            t = machine.backward_update(x_i, t, y_i, update_theta, _update_inputs, recorder)
+            t = machine.backward_update(x_i, t, y_i, update_theta, _update_inputs)
         return t
 
 
@@ -511,7 +512,6 @@ class NP2TH(Processor):
 class CompositeProcessor(Processor):
 
     def __init__(self, processors: typing.List[Processor]):
-
         self.processors = processors
 
     def output_ys(self, x):
@@ -567,16 +567,16 @@ class Processed(Machine):
         y = self.processors.forward(x)
         return self.machine.forward(y)
     
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True, recorder: Recorder=None):
+    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
         x = self.processors.forward(x)
-        return self.machine.forward_update(x, t, scorer, update_theta, recorder)
+        return self.machine.forward_update(x, t, scorer, update_theta)
 
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, recorder: Recorder=None):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         if outs is None:
             _, outs = self.output_ys(x)
 
         y_in = self.processors.get_y_out(outs[0])
-        t = self.machine.backward_update(y_in, t, outs[1], update_theta, update_inputs, recorder)
+        t = self.machine.backward_update(y_in, t, outs[1], update_theta, update_inputs)
         if update_inputs:
             return self.processors.backward(x, t, outs[0])
 

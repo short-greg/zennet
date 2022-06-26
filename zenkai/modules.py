@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod, abstractproperty
+from sklearn.multioutput import MultiOutputRegressor
+from sklearn.svm import SVR
 import torch
 import torch.nn as nn
 import torch as th
@@ -6,7 +8,8 @@ import sklearn
 import sklearn.base
 import numpy as np
 
-class SKLearnModule(nn.Module):
+
+class SklearnModule(nn.Module):
 
     def __init__(self, module, in_features: int, out_features: int, out_dtype: torch.dtype=torch.float):
         super().__init__()
@@ -26,10 +29,10 @@ class SKLearnModule(nn.Module):
         return self._out_featurse
     
     def fit(self, x: torch.Tensor, t: torch.Tensor):
-        # if self._fitted:
+        if self._fitted:
+            self.module = MultiOutputRegressor(SVR())
         #    self.module = sklearn.base.clone(self.module)
 
-        print('Targets: ', t[0:4].detach().cpu().numpy())
         result = self.module.fit(
             x.detach().cpu().numpy(),
             t.detach().cpu().numpy()

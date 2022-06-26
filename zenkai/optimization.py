@@ -6,7 +6,7 @@ import typing
 import torch.nn.utils as nn_utils
 import torch as th
 import torch.nn as nn
-from .modules import  Blackbox, Objective, SKLearnModule, Reduction
+from .modules import  Blackbox, Objective, SklearnModule
 
 
 class Scorer(ABC):
@@ -22,11 +22,11 @@ class Scorer(ABC):
 
 class Optimizer(ABC):
 
-    @abstractproperty
+    @abstractmethod
     def reset_inputs(self, inputs):
         pass
 
-    @abstractproperty
+    @abstractmethod
     def reset_theta(self, theta):
         pass
 
@@ -74,7 +74,7 @@ class TorchOptimizer(Optimizer):
         if theta is not None:
             self.reset_theta(theta)
         
-        self._evaluations = self._update_inputs(t, y, scorer=None)
+        self._evaluations = self._update_inputs(t, y, scorer=scorer)
     
     @abstractmethod
     def _update_inputs(self, t, y=None, scorer: Scorer=None):
@@ -91,10 +91,11 @@ class TorchOptimizer(Optimizer):
 
 class GradOptimizer(TorchOptimizer):
 
-    def __init__(self, net: nn.Module, objective: Objective, optim):
+    def __init__(self, net: nn.Module, objective: Objective, optim, input_weight: float=1e-1):
         super().__init__(net, objective)
         self._net = net
         self._optim: th.optim.Optimizer = optim(self._net.parameters())
+        self._input_weight = input_weight
 
     def reset_theta(self, theta=None):
         self._theta = theta
@@ -107,8 +108,10 @@ class GradOptimizer(TorchOptimizer):
 
     def _update_theta(self, t, y=None, scorer: Scorer=None):
         self._optim.zero_grad()
-        if y is None:
-            y = self._net(self._inputs)
+        x = self._inputs.detach()
+
+        # if y is None:
+        y = self._net(x)
         if scorer is None:
             evaluation = self._objective(y, t)
         else:
@@ -119,18 +122,21 @@ class GradOptimizer(TorchOptimizer):
 
     def _update_inputs(self, t, y=None, scorer: Scorer=None):
         
-        if y is None:
-            y = self._net(self._inputs)
+        x: th.Tensor = self._inputs.detach()
+        x.requires_grad_()
+        x.retain_grad()
+        # if y is None:
+        y = self._net(x)
 
         if scorer is None:
             evaluation = self._objective(y, t)
         else:
             evaluation = scorer.assess(y)
-        if self._inputs.grad is None:
+        if x.grad is None:
             evaluation.sum().backward()
-        if self._inputs.grad is None:
+        if x.grad is None:
             raise RuntimeError("Input is not a leaf node or does not retain grad")
-        self._inputs = self._inputs - self._inputs.grad
+        self._inputs = self._inputs - self._input_weight * x.grad
         return evaluation.view(1, -1)
 
     @property
@@ -290,6 +296,65 @@ class StepHillClimberProcessor(HillClimberProcessor):
         )
 
 
+class BinaryHillClimberProcessor(HillClimberProcessor):
+    
+    def __init__(self, lower: float=0.01, upper: float=0.4, k: int=1, maximize: bool=True, update_after: int=20):
+        self.lower = lower
+        self.upper = upper
+        self.k = k
+        self.maximize = maximize
+        self._diff = None
+        self._x_updated = None
+        self._out = None
+        self._s = None
+        self._step_evaluations = {}
+        self._i = 0
+        self._update_after = update_after
+        self._mean_offset = 0.
+    
+    def reset_state(self):
+        self._diff = None
+        self._x_updated = None
+        self._out = None
+        self._s = None
+
+    def __call__(self, x: th.Tensor):
+        
+        self._x = x
+         
+        self._s = th.rand(self.k) * (self.upper - self.lower) + self.lower
+        s = (self._s).view(-1, *([1] * x.dim())).repeat(1, *x.size())
+        same = th.rand(self.k, *x.size()) >= s
+        complement = 1 - same
+        y = x * same + (1 - x) * complement
+        self._out = th.cat([x.unsqueeze(0), y])
+        return self._out
+    
+    def report(self, evaluations: th.Tensor):
+
+        self._step_evaluations = {
+            k: v for i, (k, v) in enumerate(
+                sorted(self._step_evaluations.items(), key=lambda item: item[1], reverse=self.maximize)
+            ) if i < self._keep_s
+        }
+        self._step_evaluations.update(dict(zip(self._s.tolist(), evaluations[1:].tolist())))
+
+        if self._out is None:
+            raise RuntimeError('Have not processed any inputs yet (i.e. use __call__)')
+        x_updated = get_best(self._out, evaluations, self.maximize)
+
+        self._i += 1
+        if self._i % self._update_after == 0:
+            self.upper *= 0.5
+        return x_updated
+
+    def spawn(self, maximize: bool=None):
+        return BinaryHillClimberProcessor(
+            self.lower, self.upper, self.k, self.maximize if maximize is None else maximize
+        )
+
+    
+
 class HillClimberOptimizer(TorchOptimizer):
 
     def __init__(self, net: nn.Module, objective: Objective, processor: typing .Union[str, StepHillClimberProcessor]="gaussian"):
@@ -418,9 +483,9 @@ class NRepeatOptimizer(RepeatOptimizer):
         self._evaluations = evaluations
 
 
-class SKLearnOptimizer(Optimizer):
+class SklearnOptimizer(Optimizer):
 
-    def __init__(self, machine: SKLearnModule, input_optimizer: TorchOptimizer, partial_fit: bool=False):
+    def __init__(self, machine: SklearnModule, input_optimizer: TorchOptimizer, partial_fit: bool=False):
         super().__init__()
         self._machine = machine
         self._input_optimizer = input_optimizer
@@ -540,9 +605,9 @@ class SKOptimBuilder(object):
     def partial_fit(self, to_partial_fit: bool=True):
         self._partial_fit = to_partial_fit
 
-    def __call__(self, module: SKLearnModule, loss) -> Optimizer:
+    def __call__(self, module: SklearnModule, loss) -> Optimizer:
         
-        return SKLearnOptimizer(
+        return SklearnOptimizer(
             module, self._x_builder(module, loss), self._partial_fit)
 
 
@@ -572,3 +637,13 @@ class BlackboxOptimBuilder:
             return NRepeatOptimizer (self._optim(net, loss), self.n_repetitions)
         else:
             return self._optim(net, loss)
+
+
+
+# theta_optim.reset(<theta>)
+# input_optim.step()
+# input_optim.reset(<theta>)
+# 
+# self._updater.update_theta()
+# self._updater.update_inputs()
+

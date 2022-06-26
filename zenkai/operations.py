@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from abc import ABC, abstractclassmethod, abstractmethod
 
-from torch._C import Value
 from . import _utils
 
 from ._utils import NumpyPort, Port, TorchPort
