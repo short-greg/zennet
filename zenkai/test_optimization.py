@@ -204,22 +204,22 @@ class TestNRepeatOptimizer:
 
 
 
-class TestSKLearnOptimizer:
+# class TestSKLearnOptimizer:
 
-    def _build(self):
-        objective = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
+#     def _build(self):
+#         objective = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
 
-        regressor = sklearn.linear_model.LinearRegression()
-        regressor = sklearn.multioutput.MultiOutputRegressor(regressor)
-        net = modules.SklearnModule(regressor)
+#         regressor = sklearn.linear_model.LinearRegression()
+#         regressor = sklearn.multioutput.MultiOutputRegressor(regressor)
+#         net = modules.SklearnModule(regressor, 2, 2)
 
-        input_optimizer = optimization.HillClimberOptimizer(
-            net, objective, processor=optimization.StepHillClimberProcessor(k=1)
-        )
-        return optimization.SklearnOptimizer(regressor, input_optimizer, False)
+#         input_optimizer = optimization.HillClimberOptimizer(
+#             net, objective, processor=optimization.StepHillClimberProcessor(k=1)
+#         )
+#         return optimization.SklearnOptimizer(regressor, input_optimizer, False)
 
-    def test_sklearn_optimizer_with_fit(self):
+#     def test_sklearn_optimizer_with_fit(self):
 
-        optimizer = self._build()
-        optimizer.update_theta(t=th.rand(3, 2), inputs=th.rand(3, 2))
-        assert len(optimizer.evaluations) == 0
+#         optimizer = self._build()
+#         optimizer.update_theta(t=th.rand(3, 2), inputs=th.rand(3, 2))
+#         assert len(optimizer.evaluations) == 0
