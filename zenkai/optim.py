@@ -1,5 +1,6 @@
 from functools import partial
 import typing
+import sklearn
 import torch.nn as nn
 from abc import ABC, abstractmethod, abstractproperty
 import torch
@@ -31,6 +32,10 @@ class ThetaOptim(ABC):
 
     def __init__(self):
         self._evaluations = None
+
+    @abstractproperty
+    def theta(self):
+        pass
 
     @abstractmethod
     def step(self, x: torch.Tensor, t: torch.Tensor, scorer: Scorer=None):
@@ -77,9 +82,10 @@ class HillClimbDiscreteMixin(HillClimbMixin):
 
 class SklearnThetaOptim(ABC):
 
-    def __init__(self, partial_fit: bool=False):
+    def __init__(self, sklearn_machine, partial_fit: bool=False):
         self._evaluations = None
         self._partial_fit = partial_fit
+        self._machine = sklearn_machine
 
     def step(self, x: torch.Tensor, t: torch.Tensor, scorer: Scorer=None):
         self._evaluations = [self._machine.score(self._inputs, t)]
@@ -88,13 +94,46 @@ class SklearnThetaOptim(ABC):
         else:
             self._machine.fit(x, t)
 
+# perturb (depends on evaluations?)
+# advance (depends on evaluatios)
+
+class HillClimbPerturber(ABC):
+
+    @abstractmethod
+    def perturb(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+        pass
+
+
+class SimpleHillClimbPerturber(HillClimbPerturber):
+
+    def perturb(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+        v = value.unsqueeze(0) + torch.randn(1, *value.size()) * 1e-1
+        return torch.stack(
+            value[None], v
+        )
+
+
+class HillClimbSelector(ABC):
+
+    @abstractmethod
+    def advance(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+        pass
+
+
+class SimpleHillClimbSelector(HillClimbPerturber):
+
+    def advance(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+        return value[torch.argmax(evaluations)]
+
 
 class HillClimbThetaOptim(ThetaOptim):
 
-    def __init__(self, net: nn.Module, objective: Objective):
+    def __init__(self, net: nn.Module, objective: Objective, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
         super().__init__()
         self._objective = objective
         self._net = net
+        self._perturber = perturber
+        self._selector = selector
     
     def _perturb(self, value: torch.Tensor):
         v = value.unsqueeze(0) + torch.randn(1, *value.size()) * 1e-1
@@ -106,7 +145,7 @@ class HillClimbThetaOptim(ThetaOptim):
         return get_theta(self._net)
 
     def step(self, x, t, scorer: Scorer=None):
-        theta = self._perturb(self.theta)
+        theta = self._perturb(self.theta, self._evaluations)
         evaluations = []
         for theta_i in theta:
             update_theta(theta_i)
@@ -116,31 +155,32 @@ class HillClimbThetaOptim(ThetaOptim):
             else:
                 evaluations.append(self._objective(y, t))
         
-        update_theta(theta[torch.argmax(evaluations)])
+        update_theta(self._selector.advance(theta, evaluations))
         self._evaluations = evaluations
 
 
 class HillClimbInputOptim(InputOptim):
 
-    def __init__(self, net: nn.Module, objective: Objective):
+    def __init__(self, net: nn.Module, objective: Objective, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
         super().__init__()
         self._objective = objective
         self._net = net
+        self._perturber = perturber
+        self._selector = selector
 
     def step(self, x, t, scorer: Scorer=None) -> torch.Tensor:
-        x, x_batch = self._perturb(x)
+        x, x_batch = self._perturber(x, self._evaluations)
         y = self._net(x_batch)
         if scorer:
             evaluations = scorer(y)
         else:
             evaluations = self._objective(y, t)
         
-        x = x[torch.argmax(x)]
         self._evaluations = evaluations
-        return x
+        return self._selector.advance(x, evaluations)
 
 
-class InputNRepeatOptim(InputOptim):
+class NRepeatInputOptim(InputOptim):
 
     def __init__(self, optim: InputOptim, n: int):
         super().__init__()
@@ -148,23 +188,31 @@ class InputNRepeatOptim(InputOptim):
         self.n = n
 
     def step(self, x, t, scorer: Scorer=None) -> torch.Tensor:
+        evaluations = []
         for i in range(self.n):
             x = self.optim.step(x, t, scorer)
-        self._evaluations = self.optim.evaluation
+            evaluations.append(self.optim.evaluations)
+        self._evaluations = evaluations
         return x
 
 
-class ThetaNRepeatOptim(ThetaOptim):
+class NRepeatThetaOptim(ThetaOptim):
 
     def __init__(self, optim: ThetaOptim, n: int):
         super().__init__()
         self.optim = optim
         self.n = n
 
+    @property
+    def theta(self):
+        return self.optim.theta
+
     def step(self, x, t, scorer: Scorer=None) -> torch.Tensor:
+        evaluations = []
         for i in range(self.n):
             self.optim.step(x, t, scorer)
-        self._evaluations = self.optim.evaluation
+            evaluations.append(self.optim.evaluations)
+        self._evaluations = evaluations
 
 
 class GradThetaOptim(ThetaOptim):
@@ -278,7 +326,7 @@ class ThetaOptimBuilder(object):
 
     def __call__(self, net, loss) -> ThetaOptim:
         if self.n_repetitions > 1:
-            return ThetaNRepeatOptim(self._optim(net, loss), self.n_repetitions)
+            return NRepeatThetaOptim(self._optim(net, loss), self.n_repetitions)
         else:
             return self._optim(net, loss)
 
@@ -316,7 +364,7 @@ class InputOptimBuilder(object):
 
     def __call__(self, net, loss) -> ThetaOptim:
         if self.n_repetitions > 1:
-            return InputNRepeatOptim(self._optim(net, loss), self.n_repetitions)
+            return NRepeatThetaOptim(self._optim(net, loss), self.n_repetitions)
         else:
             return self._optim(net, loss)
 

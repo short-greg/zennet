@@ -13,17 +13,17 @@ class TestGradThetaOptim:
 
     def test_evaluations_is_one(self):
         linear = nn.Linear(2, 2)
-        optim = optimizers.GradThetaOptim(
+        optim = optimizers.NRepeatThetaOptim(optimizers.GradThetaOptim(
             linear, modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
-        )
+        ), 2)
         optim.step(th.randn(1, 2), th.randn(1, 2))
-        assert len(optim.evaluations) == 1
+        assert len(optim.evaluations) == 2
         
     def test_theta_has_changed(self):
         linear = nn.Linear(2, 2)
-        optim = optimizers.GradThetaOptim(
+        optim = optimizers.NRepeatThetaOptim(optimizers.GradThetaOptim(
             linear, modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
-        )
+        ), 2)
         theta = th.clone(optim.theta)
 
         optim.step(th.randn(1, 2), th.randn(1, 2))
@@ -45,6 +45,26 @@ class TestGradInputOptim:
         optim = optimizers.GradInputOptim(
             linear, modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
         )
+        x1 = th.randn(1, 2)
+        x2 = optim.step(x1, th.randn(1, 2))
+        assert (x1 != x2).any()
+
+
+class TestNRepeatInputOptim:
+
+    def test_evaluations_is_one(self):
+        linear = nn.Linear(2, 2)
+        optim = optimizers.NRepeatInputOptim(optimizers.GradInputOptim(
+            linear, modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
+        ), 3)
+        optim.step(th.randn(1, 2), th.randn(1, 2))
+        assert len(optim.evaluations) == 3
+        
+    def test_theta_has_changed(self):
+        linear = nn.Linear(2, 2)
+        optim =  optimizers.NRepeatInputOptim(optimizers.GradInputOptim(
+            linear, modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
+        ), 3)
         x1 = th.randn(1, 2)
         x2 = optim.step(x1, th.randn(1, 2))
         assert (x1 != x2).any()
