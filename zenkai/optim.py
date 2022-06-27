@@ -81,19 +81,23 @@ class HillClimbDiscreteMixin(HillClimbMixin):
         pass
 
 
-class SklearnThetaOptim(ABC):
+class SklearnThetaOptim(ThetaOptim):
 
     def __init__(self, sklearn_machine, partial_fit: bool=False):
         self._evaluations = None
         self._partial_fit = partial_fit
         self._machine = sklearn_machine
+    
+    @property
+    def theta(self):
+        return self._machine
 
     def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
-        self._evaluations = [self._machine.score(x, t)]
         if self._partial_fit:
             self._machine.partial_fit(x, t)
         else:
             self._machine.fit(x, t)
+        self._evaluations = [self._machine.score(x, t)]
 
 # perturb (depends on evaluations?)
 # advance (depends on evaluatios)
@@ -267,7 +271,7 @@ class GradInputOptim(InputOptim):
             self._evaluations = []
             return x
         
-        if not y:
+        if y is None or not x.requires_grad:
             x = x.detach()
             x.requires_grad_()
             x.retain_grad()

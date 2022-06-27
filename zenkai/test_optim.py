@@ -1,7 +1,6 @@
 from functools import partial
 import sklearn.linear_model
 import sklearn.multioutput
-from . import optimization
 import torch.nn as nn
 from . import modules
 import torch as th
@@ -48,6 +47,18 @@ class TestGradInputOptim:
         x1 = th.randn(1, 2)
         x2 = optim.step(x1, th.randn(1, 2))
         assert (x1 != x2).any()
+        
+    def test_theta_has_changed_with_y(self):
+        linear = nn.Linear(2, 2)
+        optim = optimizers.GradInputOptim(
+            linear, modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
+        )
+        x1 = th.randn(1, 2, requires_grad=True)
+        x1.retain_grad()
+        
+        y = linear(x1)
+        x2 = optim.step(x1, th.randn(1, 2), y)
+        assert (x1 != x2).any()
 
 
 class TestNRepeatInputOptim:
@@ -68,6 +79,23 @@ class TestNRepeatInputOptim:
         x1 = th.randn(1, 2)
         x2 = optim.step(x1, th.randn(1, 2))
         assert (x1 != x2).any()
+
+
+class TestSklearnThetaOptim:
+
+    def test_evaluations_with_fit_is_one(self):
+        optim = optimizers.SklearnThetaOptim(
+            sklearn.linear_model.LinearRegression(), False
+        )
+        optim.step(th.randn(2, 2), th.randn(2))
+        assert len(optim.evaluations) == 1
+
+    def test_evaluations_with_partial_fit_is_one(self):
+        optim = optimizers.SklearnThetaOptim(
+            sklearn.linear_model.SGDRegressor(), True
+        )
+        optim.step(th.randn(3, 2), th.randn(3))
+        assert len(optim.evaluations) == 1
 
 
 class TestHillClimbThetaOptim:
