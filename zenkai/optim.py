@@ -39,7 +39,7 @@ class ThetaOptim(ABC):
         pass
 
     @abstractmethod
-    def step(self, x: torch.Tensor, t: torch.Tensor, scorer: Scorer=None):
+    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
         pass
 
     @property
@@ -88,8 +88,8 @@ class SklearnThetaOptim(ABC):
         self._partial_fit = partial_fit
         self._machine = sklearn_machine
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, scorer: Scorer=None):
-        self._evaluations = [self._machine.score(self._inputs, t)]
+    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
+        self._evaluations = [self._machine.score(x, t)]
         if self._partial_fit:
             self._machine.partial_fit(x, t)
         else:
@@ -140,7 +140,7 @@ class HillClimbThetaOptim(ThetaOptim):
     def theta(self):
         return get_theta(self._net)
 
-    def step(self, x, t, scorer: Scorer=None):
+    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
         theta = self._perturber(self.theta, self._evaluations)
         evaluations = []
         for theta_i in theta:
@@ -164,7 +164,7 @@ class HillClimbInputOptim(InputOptim):
         self._perturber = perturber or SimpleHillClimbPerturber()
         self._selector = selector or SimpleHillClimbSelector()
 
-    def step(self, x, t, scorer: Scorer=None) -> torch.Tensor:
+    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
         x = self._perturber(x, self._evaluations)
         y = self._net(x.view(-1, *x.shape[2:]))
         y = y.view(x.shape[0], x.shape[1], *y.shape[1:])
@@ -185,10 +185,10 @@ class NRepeatInputOptim(InputOptim):
         self.optim = optim
         self.n = n
 
-    def step(self, x, t, scorer: Scorer=None) -> torch.Tensor:
+    def step(self, x, t, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
         evaluations = []
         for i in range(self.n):
-            x = self.optim.step(x, t, scorer)
+            x = self.optim.step(x, t, y, scorer=scorer)
             evaluations.append(self.optim.evaluations)
         self._evaluations = evaluations
         return x
@@ -205,10 +205,10 @@ class NRepeatThetaOptim(ThetaOptim):
     def theta(self):
         return self.optim.theta
 
-    def step(self, x, t, scorer: Scorer=None) -> torch.Tensor:
+    def step(self, x, t, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
         evaluations = []
         for i in range(self.n):
-            self.optim.step(x, t, scorer)
+            self.optim.step(x, t, y, scorer)
             evaluations.append(self.optim.evaluations)
         self._evaluations = evaluations
 
@@ -228,9 +228,10 @@ class GradThetaOptim(ThetaOptim):
     def theta(self):
         return get_theta(self._net)
     
-    def step(self, x: torch.Tensor, t: torch.Tensor, scorer: Scorer=None):
+    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
         self.optim.zero_grad()
-        y = self._net(x)
+        if y is None:
+            y = self._net(x)
         if scorer is None:
             evaluation = self.objective(y, t)
         else:
@@ -248,22 +249,31 @@ class InputUpdater(ABC):
 
 class GradInputOptim(InputOptim):
 
-    def __init__(self, net: nn.Module, objective: Objective, input_updater: InputUpdater=None):
+    def __init__(self, net: nn.Module, objective: Objective, input_updater: InputUpdater=None, skip_eval: bool=False):
         super().__init__()
         self._net = net
         self.objective = objective
         self.input_updater = input_updater
+        self.skip_eval = skip_eval
     
     def _update(self, x: torch.Tensor):
         if self.input_updater:
             return self.input_updater(x)
         return x - x.grad
     
-    def step(self, x: torch.Tensor, t: torch.Tensor, scorer: Scorer=None) -> torch.Tensor:
-        x = x.detach()
-        x.requires_grad_()
-        x.retain_grad()
-        y = self._net(x)
+    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
+        if self.skip_eval and x.grad is not None:
+            x = self._update(x)
+            self._evaluations = []
+            return x
+        
+        if not y:
+            x = x.detach()
+            x.requires_grad_()
+            x.retain_grad()
+            y = self._net(x)
+        else:
+            y.retain_grad()
         if scorer is None:
             evaluation = self.objective(y, t)
         else:
@@ -281,7 +291,7 @@ class NullThetaOptim(ThetaOptim):
         self.loss = loss
         self.f = f
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, scorer: Scorer=None) -> torch.Tensor:
+    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
         if scorer:
             self._evaluations = scorer(self.f(x))
         else:
@@ -465,7 +475,7 @@ class GeneticThetaOptim(ThetaOptim):
     def recombine(self, chromosome_pairs: torch.Tensor):
         return self.recombiner(chromosome_pairs, self._chromosomes, self._evaluations)
 
-    def step(self, x, t, scorer: Scorer=None) -> torch.Tensor:
+    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
         chromosome_pairs = self.selector()
         chromosomes = self.recombiner(chromosome_pairs)
         chromosomes = self.processor(chromosomes)
