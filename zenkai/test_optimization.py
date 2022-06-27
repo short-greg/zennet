@@ -211,12 +211,12 @@ class TestSKLearnOptimizer:
 
         regressor = sklearn.linear_model.LinearRegression()
         regressor = sklearn.multioutput.MultiOutputRegressor(regressor)
-        net = modules.SKLearnModule(regressor)
+        net = modules.SklearnModule(regressor)
 
         input_optimizer = optimization.HillClimberOptimizer(
             net, objective, processor=optimization.StepHillClimberProcessor(k=1)
         )
-        return optimization.SKLearnOptimizer(regressor, input_optimizer, False)
+        return optimization.SklearnOptimizer(regressor, input_optimizer, False)
 
     def test_sklearn_optimizer_with_fit(self):
 
