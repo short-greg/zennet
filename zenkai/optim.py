@@ -7,6 +7,7 @@ import torch
 from .modules import Objective
 from .optimization import Scorer
 from torch.nn import utils as nn_utils
+import numpy as np
 
 
 def update_theta(module, theta):
@@ -100,30 +101,30 @@ class SklearnThetaOptim(ABC):
 class HillClimbPerturber(ABC):
 
     @abstractmethod
-    def perturb(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+    def __call__(self, value: torch.Tensor, evaluations) -> torch.Tensor:
         pass
 
 
 class SimpleHillClimbPerturber(HillClimbPerturber):
 
-    def perturb(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+    def __call__(self, value: torch.Tensor, evaluations) -> torch.Tensor:
         v = value.unsqueeze(0) + torch.randn(1, *value.size()) * 1e-1
-        return torch.stack(
-            value[None], v
+        return torch.cat(
+            [value[None], v]
         )
 
 
 class HillClimbSelector(ABC):
 
     @abstractmethod
-    def advance(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+    def __call__(self, value: torch.Tensor, evaluations) -> torch.Tensor:
         pass
 
 
-class SimpleHillClimbSelector(HillClimbPerturber):
+class SimpleHillClimbSelector(HillClimbSelector):
 
-    def advance(self, value: torch.Tensor, evaluations) -> torch.Tensor:
-        return value[torch.argmax(evaluations)]
+    def __call__(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+        return value[np.argmax(evaluations)]
 
 
 class HillClimbThetaOptim(ThetaOptim):
@@ -132,30 +133,25 @@ class HillClimbThetaOptim(ThetaOptim):
         super().__init__()
         self._objective = objective
         self._net = net
-        self._perturber = perturber
-        self._selector = selector
+        self._perturber = perturber or SimpleHillClimbPerturber()
+        self._selector = selector or SimpleHillClimbSelector()
     
-    def _perturb(self, value: torch.Tensor):
-        v = value.unsqueeze(0) + torch.randn(1, *value.size()) * 1e-1
-        return torch.stack(
-            value[None], v
-        )
-    
+    @property
     def theta(self):
         return get_theta(self._net)
 
     def step(self, x, t, scorer: Scorer=None):
-        theta = self._perturb(self.theta, self._evaluations)
+        theta = self._perturber(self.theta, self._evaluations)
         evaluations = []
         for theta_i in theta:
-            update_theta(theta_i)
+            update_theta(self._net, theta_i)
             y = self._net(x)
             if scorer:
-                evaluations.append(scorer(y))
+                evaluations.append(scorer(y).item())
             else:
-                evaluations.append(self._objective(y, t))
+                evaluations.append(self._objective(y, t).item())
         
-        update_theta(self._selector.advance(theta, evaluations))
+        update_theta(self._net, self._selector(theta, evaluations))
         self._evaluations = evaluations
 
 
@@ -165,19 +161,21 @@ class HillClimbInputOptim(InputOptim):
         super().__init__()
         self._objective = objective
         self._net = net
-        self._perturber = perturber
-        self._selector = selector
+        self._perturber = perturber or SimpleHillClimbPerturber()
+        self._selector = selector or SimpleHillClimbSelector()
 
     def step(self, x, t, scorer: Scorer=None) -> torch.Tensor:
-        x, x_batch = self._perturber(x, self._evaluations)
-        y = self._net(x_batch)
+        x = self._perturber(x, self._evaluations)
+        y = self._net(x.view(-1, *x.shape[2:]))
+        y = y.view(x.shape[0], x.shape[1], *y.shape[1:])
         if scorer:
             evaluations = scorer(y)
         else:
-            evaluations = self._objective(y, t)
+            evaluations = self._objective.forward_multi(y, t)
+        evaluations = [e.item() for e in evaluations]
         
         self._evaluations = evaluations
-        return self._selector.advance(x, evaluations)
+        return self._selector(x, evaluations)
 
 
 class NRepeatInputOptim(InputOptim):
