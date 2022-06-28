@@ -150,3 +150,17 @@ class LossObjective(Objective):
 
     def eval(self, x, t):
         return self.loss(x, t)
+
+
+class Skloss(object):
+
+    def __init__(self, sklearn_machine):
+        super().__init__()
+        self._machine = sklearn_machine
+
+    @property
+    def maximize(self) -> bool:
+        return False
+    
+    def eval(self, x, t):
+        return self._machine.score(x, t)

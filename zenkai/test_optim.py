@@ -4,7 +4,7 @@ import sklearn.multioutput
 import torch.nn as nn
 from . import modules
 import torch as th
-from . import optim as optimizers
+from . import optimizers
 from . import modules
 
 

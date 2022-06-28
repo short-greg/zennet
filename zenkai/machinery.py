@@ -16,11 +16,14 @@ import torch.nn.utils as nn_utils
 from copy import deepcopy
 import pandas as pd
 
-from .modules import SklearnModule
-from .optimization import (
-    BlackboxOptimBuilder, GradOptimizer, HillClimberOptimizer, 
-    NRepeatOptimizer, Optimizer, SKOptimBuilder, 
-    Scorer, Objective, THOptimBuilder , StepHillClimberProcessor, HillClimberProcessor
+from .modules import Objective, SklearnModule, Skloss
+# from .optimization import (
+#     BlackboxOptimBuilder, GradOptimizer, HillClimberOptimizer, 
+#     NRepeatOptimizer, Optimizer, SKOptimBuilder, 
+#     Scorer, Objective, THOptimBuilder , SkStepHillClimberProcessor, HillClimberProcessor
+# )
+from .optimizers import (
+    ThetaOptimBuilder, Scorer, SklearnOptimBuilder, InputOptimBuilder, GradThetaOptim, GradInputOptim
 )
 
 from sklearn import multioutput
@@ -182,11 +185,16 @@ def to_float(x: typing.List[th.Tensor]):
 
 class TorchNN(Machine):
 
-    def __init__(self, module: nn.Module, objective: Objective, updater: THOptimBuilder=None, fixed: bool=False, recorder: Recorder=None):
+    def __init__(
+        self, module: nn.Module, objective: Objective , 
+        theta_updater: ThetaOptimBuilder=None, input_updater: InputOptimBuilder=None,
+        fixed: bool=False, 
+        recorder: Recorder=None):
         
         self._module = module
         self._objective = objective
-        self._updater = updater(module, objective) or GradOptimizer (module, objective)
+        self._theta_updater = theta_updater(module, objective) or GradThetaOptim (module, objective)
+        self._input_updater = input_updater(module, objective) or GradInputOptim(module, objective)
         self._fixed = fixed
         self._recorder = recorder
 
@@ -214,18 +222,18 @@ class TorchNN(Machine):
     def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
 
         if update_theta and not self._fixed:
-            self._updater.update_theta(t, x, scorer=scorer)
+            self._theta_updater.step(x, t, scorer=scorer)
             if self._recorder:
                 self._recorder.record_theta(
-                    id(self), nn_utils.parameters_to_vector(self._module.parameters()), self._updater.theta,
-                    to_float(self._updater.evaluations)
+                    id(self), nn_utils.parameters_to_vector(self._module.parameters()), self._theta_updater.theta,
+                    to_float(self._theta_updater.evaluations)
                 )
-            nn_utils.vector_to_parameters(self._updater.theta, self._module.parameters())
+            nn_utils.vector_to_parameters(self._theta_updater.theta, self._module.parameters())
         
         y = self.forward(x)
         return y
 
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, scorer: Scorer=None):
         if outs is not None:
             y = self.get_y_out(outs)
             x = self.get_in(outs)
@@ -235,26 +243,25 @@ class TorchNN(Machine):
             y = self._module(x)
 
         if update_theta and not self._fixed:
-            self._updater.update_theta(t, y=y, inputs=x)
+            self._theta_updater.step(x, t, y=y, scorer=scorer)
         
             if self._recorder:
                 self._recorder.record_theta(
                     id(self), nn_utils.parameters_to_vector(self._module.parameters()), 
-                    self._updater.theta,
-                    evaluations=to_float(self._updater.evaluations)
+                    self._theta_updater.theta,
+                    evaluations=to_float(self._theta_updater.evaluations)
                 )
-            nn_utils.vector_to_parameters(self._updater.theta, self._module.parameters())
+            nn_utils.vector_to_parameters(self._theta_updater.theta, self._module.parameters())
         
         if update_inputs:
-            self._updater.reset_inputs(x)
-            self._updater.update_inputs(t, y=y)
+            x_prime = self._input_updater.step(x, t, y=y, scorer=scorer)
             
             if self._recorder:
                 self._recorder.record_inputs(
-                    id(self), x, self._updater.inputs,
-                    evaluations=to_float(self._updater.evaluations)
+                    id(self), x, x_prime,
+                    evaluations=to_float(self._input_updater.evaluations)
                 )
-            return self._updater.inputs
+            return x_prime
 
     @property
     def module(self):
@@ -263,11 +270,16 @@ class TorchNN(Machine):
 
 class SklearnMachine(Machine):
 
-    def __init__(self, module: SklearnModule, loss, updater: SKOptimBuilder=None, fixed: bool=False, partial: bool=False, recorder: Recorder=None):
+    def __init__(
+        self, module: SklearnModule, loss, 
+        theta_updater: SklearnOptimBuilder=None, input_updater: InputOptimBuilder=None,
+        fixed: bool=False, partial: bool=False, recorder: Recorder=None
+    ):
         super().__init__()
         self._module = module
         self._loss = loss
-        self._updater = updater(self._module, loss)
+        self._theta_updater = theta_updater(self._module)
+        self._input_updater = input_updater(self._module, Skloss(self._module))
         self._fixed = fixed
         self._partial = partial
         self._fit = False
@@ -317,22 +329,22 @@ class SklearnMachine(Machine):
     def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         
         if update_theta and not self._fixed:
-            self._updater.update_theta(t, inputs=x)
+            self._theta_updater.step(x, t)
         
         if update_inputs:
-            self._updater.update_inputs(t, inputs=x)
+            x_prime = self._input_updater.step(x, t)
             
             if self._recorder:
                 self._recorder.record_inputs(
-                    id(self), x, self._updater.inputs,
-                    evaluations=to_float(self._updater.evaluations)
+                    id(self), x, x_prime,
+                    evaluations=to_float(self._input_updater.evaluations)
                 )
-            return self._updater.inputs
+            return x_prime
 
 
 class BlackboxMachine(Machine):
 
-    def __init__(self, f, loss, input_updater: BlackboxOptimBuilder=None):
+    def __init__(self, f, loss, input_updater: InputOptimBuilder=None):
         super().__init__()
         self._f = f
         self._input_updater = input_updater(f, loss)
@@ -365,8 +377,7 @@ class BlackboxMachine(Machine):
     def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         
         if update_inputs:
-            self._input_updater.update_inputs(t, inputs=x)
-            return self._input_updater.inputs
+            return self._input_updater.step(x, t)
 
 
 class SequenceScorer(Scorer):
