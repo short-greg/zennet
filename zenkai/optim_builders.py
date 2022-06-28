@@ -1,10 +1,8 @@
 from functools import partial
-
 import torch
-
 from .modules import Skloss
-from .optimizers import GradThetaOptim, NRepeatThetaOptim, NullThetaOptim, SklearnThetaOptim, ThetaOptim
-from .hill_climbing import HillClimbInputOptim, HillClimbPerturber, HillClimbSelector, HillClimbThetaOptim, SimpleHillClimbPerturber, SimpleHillClimbSelector
+from .optimizers import GradThetaOptim, NRepeatInputOptim, NRepeatThetaOptim, NullThetaOptim, SklearnThetaOptim, ThetaOptim
+from .hill_climbing import GaussianHillClimbPerturber, GaussianHillClimbSelector, HillClimbInputOptim, HillClimbPerturber, HillClimbSelector, HillClimbThetaOptim, SimpleHillClimbPerturber, SimpleHillClimbSelector
 
 
 class ThetaOptimBuilder(object):
@@ -24,12 +22,18 @@ class ThetaOptimBuilder(object):
         )
         return self
     
-    def step_hill_climber(self, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
-        perturber = perturber or SimpleHillClimbPerturber()
-        selector = selector or SimpleHillClimbSelector()
+    def step_hill_climber(self, maximize: bool=False):
+        perturber = SimpleHillClimbPerturber()
+        selector = SimpleHillClimbSelector(maximize)
         self._optim = partial(HillClimbThetaOptim, perturber=perturber, selector=selector )
         return self
     
+    def step_gaussian_hill_climber(self, mean: float=-2, std: float=1, k: int=16, momentum: float=0.0, maximize: bool=False):
+        perturber = GaussianHillClimbPerturber(mean, std, k, momentum, maximize)
+        selector = GaussianHillClimbSelector(momentum, maximize)
+        self._optim = partial(HillClimbThetaOptim, perturber=perturber, selector=selector)
+        return self
+
     def null(self, is_null: bool=True):
         self.is_null = is_null
         return self
@@ -101,12 +105,22 @@ class InputOptimBuilder(object):
         )
         return self
     
-    def step_hill_climber(self, perturber: SimpleHillClimbPerturber=None, selector: SimpleHillClimbSelector=None):
+    def step_hill_climber(self, maximize: bool=False):
         perturber = perturber or SimpleHillClimbPerturber()
-        selector = selector or SimpleHillClimbSelector()
-        self._optim = partial(HillClimbInputOptim, perturber=perturber, selector=selector )
+        selector = selector or SimpleHillClimbSelector(maximize)
+        self._optim = partial(
+            HillClimbInputOptim, 
+            perturber=perturber, 
+            selector=selector
+        )
         return self
     
+    def step_gaussian_hill_climber(self, mean: float=-2, std: float=1, k: int=16, momentum: float=0.0, maximize: bool=False):
+        perturber = GaussianHillClimbPerturber(mean, std, k, momentum, maximize)
+        selector = GaussianHillClimbSelector(momentum, maximize)
+        self._optim = partial(HillClimbInputOptim, perturber=perturber, selector=selector)
+        return self
+
     def repeat(self, n_repetitions: int):
 
         if n_repetitions <= 0:
@@ -117,5 +131,7 @@ class InputOptimBuilder(object):
     def __call__(self, net, loss) -> ThetaOptim:
         optim = self._optim(net, loss)
         if self.n_repetitions > 1:
-            return NRepeatThetaOptim(optim, self.n_repetitions)
+            return NRepeatInputOptim(optim, self.n_repetitions)
         return optim
+
+

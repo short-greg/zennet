@@ -257,14 +257,13 @@ class TorchNN(Machine):
             nn_utils.vector_to_parameters(self._theta_updater.theta, self._module.parameters())
         
         if update_inputs:
-            print(self._input_updater)
             x_prime = self._input_updater.step(x, t, y=y)
-            print(x_prime)
             if self._recorder:
                 self._recorder.record_inputs(
                     id(self), x, x_prime,
                     evaluations=to_float(self._input_updater.evaluations)
                 )
+            assert x_prime is not None, f'{self._input_updater}'
             return x_prime
 
     @property
@@ -465,7 +464,8 @@ class Sequence(Machine):
         for i, (x_i, y_i, machine) in enumerate(zip(reversed(xs), reversed(outs[1:]), reversed(self.machines))):
             _update_inputs = i < len(xs) or update_inputs
             t = machine.backward_update(x_i, t, y_i, update_theta, _update_inputs)
-            print(t, machine)
+        
+            assert t is not None, f'{machine}'
         return t
 
 

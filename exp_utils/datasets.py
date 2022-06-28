@@ -2,19 +2,14 @@ from sklearn.datasets import load_digits
 from torch.utils.data import Dataset
 import torch
 
-
 # %%
 
 import typing
-from functools import partial
-from zenkai import machinery, optimization
 import sklearn
 import torch as th
 import torch.nn as nn
 import numpy as np
-
 from sklearn.datasets import make_blobs, make_classification
-
 
 
 class Digits(Dataset):

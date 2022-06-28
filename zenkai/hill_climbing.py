@@ -7,12 +7,12 @@ from .optimizers import InputOptim, Scorer, ThetaOptim, get_theta, update_theta
 
 
 
-def get_best(x: torch.Tensor, evaluations, maximize: bool=True):
+def get_best(value: torch.Tensor, evaluations, maximize: bool=True):
     if maximize:
-        idx = torch.argmax(evaluations)
+        idx = np.argmax(evaluations)
     else:
-        idx = torch.argmin(evaluations)
-    return x[idx]
+        idx = np.argmin(evaluations)
+    return value[idx]
 
 
 class HillClimbMixin(ABC):
@@ -78,14 +78,17 @@ class GaussianHillClimbPerturber(HillClimbPerturber):
 class HillClimbSelector(ABC):
 
     @abstractmethod
-    def __call__(self, value: torch.Tensor, evaluations) -> torch.Tensor:
+    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluations) -> torch.Tensor:
         pass
 
 
 class SimpleHillClimbSelector(HillClimbSelector):
 
-    def __call__(self, value: torch.Tensor, evaluations) -> torch.Tensor:
-        return value[np.argmax(evaluations)]
+    def __init__(self, maximize: bool=False):
+        self.maximize = maximize
+    
+    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluations) -> torch.Tensor:
+        return get_best(value, evaluations, self.maximize)
 
 
 class GaussianHillClimbSelector(HillClimbSelector):
@@ -94,29 +97,19 @@ class GaussianHillClimbSelector(HillClimbSelector):
 
         self._momentum = momentum
         self.maximize = maximize
-
         self._diff = None
         self._x_updated = None
-        self._s = None
         self._step_evaluations = {}
         self._keep_s = True
 
-    def __call__(self, value: torch.Tensor, evaluations) -> torch.Tensor:
-        self._step_evaluations = {
-            k: v for i, (k, v) in enumerate(
-                sorted(self._step_evaluations.items(), 
-                key=lambda item: item[1], reverse=self.maximize)
-            ) if i < self._keep_s
-        }
-        self._step_evaluations.update(dict(zip(self._s.tolist(), evaluations[1:].tolist())))
-
+    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluations) -> torch.Tensor:
         best = get_best(value, evaluations, self.maximize)
         if self._diff is not None and self._momentum is not None:
-            self._diff = (1 - self._momentum) * (best - value) + self._momentum * self._diff
-            x_updated = value + self._diff
+            self._diff = (1 - self._momentum) * (best - cur) + self._momentum * self._diff
+            x_updated = cur + self._diff
         elif self._momentum is not None:
-            self._diff = (best - value)
-            x_updated = value + self._diff
+            self._diff = (best - cur)
+            x_updated = cur + self._diff
         else:
             x_updated = best
         return x_updated
@@ -136,7 +129,10 @@ class HillClimbThetaOptim(ThetaOptim):
         return get_theta(self._net)
 
     def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
-        theta = self._perturber(self.theta, self._evaluations)
+        assert t is not None
+        
+        theta_base = self.theta
+        theta = self._perturber(theta_base, self._evaluations)
         evaluations = []
         for theta_i in theta:
             update_theta(self._net, theta_i)
@@ -145,8 +141,8 @@ class HillClimbThetaOptim(ThetaOptim):
                 evaluations.append(scorer.assess(y).item())
             else:
                 evaluations.append(self._objective(y, t).item())
-        
-        update_theta(self._net, self._selector(theta, evaluations))
+        theta_best =  self._selector(theta_base, theta, evaluations)
+        update_theta(self._net, theta_best)
         self._evaluations = evaluations
 
 
@@ -160,9 +156,9 @@ class HillClimbInputOptim(InputOptim):
         self._selector = selector or SimpleHillClimbSelector()
 
     def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
-        x = self._perturber(x, self._evaluations)
-        y = self._net(x.view(-1, *x.shape[2:]))
-        y = y.view(x.shape[0], x.shape[1], *y.shape[1:])
+        x_pool = self._perturber(x, self._evaluations)
+        y = self._net(x_pool.view(-1, *x_pool.shape[2:]))
+        y = y.view(x_pool.shape[0], x_pool.shape[1], *y.shape[1:])
         if scorer:
             evaluations = scorer.assess(y)
         else:
@@ -170,4 +166,4 @@ class HillClimbInputOptim(InputOptim):
         evaluations = [e.item() for e in evaluations]
         
         self._evaluations = evaluations
-        return self._selector(x, evaluations)
+        return self._selector(x, x_pool, evaluations)

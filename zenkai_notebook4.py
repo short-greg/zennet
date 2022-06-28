@@ -15,11 +15,12 @@ def set_env():
 set_env()
 
 from functools import partial
-from zenkai import machinery, optimization
+from zenkai import machinery, modules, optim_builders, optimizers
 import sklearn
 import torch as th
 import torch.nn as nn
 import numpy as np
+import exp_utils
 
 from sklearn.datasets import make_blobs, make_classification
 
@@ -29,72 +30,6 @@ np.random.seed(1)
 # %%
 
 
-class Dataset(object):
-
-    def __init__(self, X, t, shuffle=True, batch_size: int=128):
-        self.X = X
-        self.t = t
-        self.shuffle = shuffle
-        self.batch_size = batch_size
-    
-    @property
-    def n_iterations(self):
-        return len(self.X) // self.batch_size
-    
-    def __iter__(self) -> typing.Iterator:
-
-        if self.shuffle:
-            order = np.random.permutation(len(self.X))
-        else:
-            order = np.arange(0, len(self.X))
-        batch_size = self.batch_size
-        for i in range(self.n_iterations):
-            from_idx = i * batch_size
-            to_idx = (i + 1) * batch_size
-            t_i = self.t[order[from_idx:to_idx]]
-            x_i = self.X[order[from_idx:to_idx]]
-            yield x_i, t_i
-
-
-class Blobs(Dataset):
-
-    def __init__(self, shuffle=True, batch_size: int=128):
-        X, t = make_blobs(
-            n_samples=20000, centers=3, n_features=2, 
-            random_state=0
-        )
-        
-        super().__init__(X, t, shuffle, batch_size)
-
-
-
-class Blobs2(Dataset):
-
-    def __init__(self, shuffle=True, batch_size: int=128):
-        X, t = make_blobs(
-            n_samples=20000, centers=6, n_features=2, 
-            random_state=0
-        )
-        t[t==1] = 2
-        t[t==2] = 0
-        t[t==3] = 1
-        t[t==4] = 2
-        t[t==5] = 1
-
-        super().__init__(X, t, shuffle, batch_size)
-
-
-
-class SimpleClassification(Dataset):
-
-    def __init__(self, shuffle=True, batch_size: int=128):
-        X, t = make_classification(
-            n_samples=20000, n_features=2, n_redundant=0, n_informative=2, 
-            n_clusters_per_class=1, n_classes=3
-        )   
-
-        super().__init__(X, t, shuffle, batch_size)
-
 recorder = machinery.EuclidRecorder()
 
 
@@ -102,29 +37,25 @@ recorder = machinery.EuclidRecorder()
 # net = nn.Linear(2, 2)
 # optimizer = mac.THOptimBuilder().hill_climber()(net, objective)
 
-objective2 = machinery.LossObjective(nn.CrossEntropyLoss, reduction=machinery.MeanReduction())
-objective1 = machinery.LossObjective(nn.MSELoss, reduction=machinery.MeanReduction())
+objective2 = modules.LossObjective(nn.CrossEntropyLoss, reduction=modules.MeanReduction())
+objective1 = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
 net1 = nn.Sequential(nn.Linear(2, 4), nn.Sigmoid())
 net2 = nn.Sequential(nn.Linear(4, 3))
-builder = optimization.THXPBuilder(
-    optimization.SingleOptimBuilder().step_hill_climber().repeat(4), # step_hill_climber(momentum=None, std=0.2, update_after=600).repeat(40),
-    optimization.SingleOptimBuilder().step_hill_climber(momentum=None, update_after=2000).repeat(10)
-)
+
+theta_builder = optim_builders.ThetaOptimBuilder().step_gaussian_hill_climber().repeat(4)
+input_builder = optim_builders.InputOptimBuilder().step_gaussian_hill_climber(momentum=None).repeat(4)
 
 
-# sequence = machinery.TorchNN(
-#     nn.Sequential(net1, net2), objective2, builder
-# )
+theta_builder2 = optim_builders.ThetaOptimBuilder().step_gaussian_hill_climber().repeat(4)
+input_builder2 = optim_builders.InputOptimBuilder().step_gaussian_hill_climber(momentum=None).repeat(4)
+
 
 layer1 = machinery.TorchNN(
-    net1, objective1, builder
+    net1, objective1, theta_builder, input_builder
 )
-
 layer2 = machinery.TorchNN(
-    net2, objective2, builder
+    net2, objective2, theta_builder2, input_builder2
 )
-
-
 sequence = machinery.Sequence(
     [layer1, layer2]
 )
@@ -138,7 +69,7 @@ batch_size = 2048
 losses = []
 n_epochs = 20
 
-blobs = SimpleClassification(batch_size=batch_size)
+blobs = exp_utils.datasets.SimpleClassification(batch_size=batch_size)
 
 for _ in range(n_epochs):
     n_iterations = blobs.n_iterations
@@ -151,7 +82,7 @@ for _ in range(n_epochs):
             y, ys = sequence.output_ys(x_i)
             assessment = sequence.assess(y, t_i)
             losses.append(assessment.item())
-            sequence.backward_update(x_i, t_i, update_theta=True, recorder=recorder)
+            sequence.backward_update(x_i, t_i, update_theta=True)
             # print(next(layer1.module.parameters()))
             recorder.adv()
             tq.set_postfix({'Loss': statistics.mean(losses[-20:])}, refresh=True)
@@ -159,7 +90,7 @@ for _ in range(n_epochs):
         
 
 # print(recorder.input_df)
-print(recorder.theta_df)
+# print(recorder.theta_df)
 print(losses)
 
 # layer = machinery.Processed(

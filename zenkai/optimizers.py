@@ -60,7 +60,6 @@ class InputOptim(ABC):
         return self._evaluations
 
 
-
 class SklearnThetaOptim(ThetaOptim):
 
     def __init__(self, sklearn_machine, partial_fit: bool=False):
@@ -78,7 +77,6 @@ class SklearnThetaOptim(ThetaOptim):
         else:
             self._machine.fit(x, t)
         self._evaluations = [self._machine.score(x, t)]
-
 
 
 class NRepeatInputOptim(InputOptim):
