@@ -17,14 +17,11 @@ from copy import deepcopy
 import pandas as pd
 
 from .modules import Objective, SklearnModule, Skloss
-# from .optimization import (
-#     BlackboxOptimBuilder, GradOptimizer, HillClimberOptimizer, 
-#     NRepeatOptimizer, Optimizer, SKOptimBuilder, 
-#     Scorer, Objective, THOptimBuilder , SkStepHillClimberProcessor, HillClimberProcessor
-# )
 from .optimizers import (
-    HillClimbInputOptim, SklearnThetaOptim, GradInputOptim, GradThetaOptim, ThetaOptimBuilder, Scorer, SklearnOptimBuilder, InputOptimBuilder, GradThetaOptim, GradInputOptim
+    SklearnThetaOptim, GradInputOptim, GradThetaOptim, Scorer, GradThetaOptim, GradInputOptim
 )
+from .hill_climbing import HillClimbInputOptim
+from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
 
 from sklearn import multioutput
 

@@ -6,8 +6,8 @@ import torch as th
 from functools import partial
 import numpy as np
 from . import optimizers
+from . import optim_builders
 from . import modules
-
 
 
 class TestTorchNN:
@@ -156,8 +156,8 @@ class TestSequence:
         )
 
         objective = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
-        optim_theta = optimizers.ThetaOptimBuilder().step_hill_climber()
-        optim_input = optimizers.InputOptimBuilder().step_hill_climber()
+        optim_theta = optim_builders.ThetaOptimBuilder().step_hill_climber()
+        optim_input = optim_builders.InputOptimBuilder().step_hill_climber()
         # optim2 = optimization.SingleOptimBuilder().grad()
 
         machine = mac.TorchNN(layer1, objective, optim_theta, optim_input)
