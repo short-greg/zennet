@@ -5,7 +5,6 @@ import torch.nn as nn
 from abc import ABC, abstractmethod, abstractproperty
 import torch
 from .modules import Objective, SklearnModule, Skloss
-from .optimization import Scorer
 from torch.nn import utils as nn_utils
 import numpy as np
 

@@ -1,13 +1,12 @@
-from functools import partial
-import sklearn.linear_model
-import sklearn.multioutput
-from . import optimization
-import torch.nn as nn
-from . import modules
-import torch as th
+# from functools import partial
+# import sklearn.linear_model
+# import sklearn.multioutput
+# from . import optimization
+# import torch.nn as nn
+# from . import modules
+# import torch as th
 
-
-
+"""
 class TestTHOptimBuilder:
 
     def test_grad_builder_builds_grad(self):
@@ -223,3 +222,5 @@ class TestNRepeatOptimizer:
 #         optimizer = self._build()
 #         optimizer.update_theta(t=th.rand(3, 2), inputs=th.rand(3, 2))
 #         assert len(optimizer.evaluations) == 0
+
+"""
