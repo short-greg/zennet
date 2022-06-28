@@ -23,7 +23,7 @@ from .modules import Objective, SklearnModule, Skloss
 #     Scorer, Objective, THOptimBuilder , SkStepHillClimberProcessor, HillClimberProcessor
 # )
 from .optimizers import (
-    ThetaOptimBuilder, Scorer, SklearnOptimBuilder, InputOptimBuilder, GradThetaOptim, GradInputOptim
+    HillClimbInputOptim, SklearnThetaOptim, GradInputOptim, GradThetaOptim, ThetaOptimBuilder, Scorer, SklearnOptimBuilder, InputOptimBuilder, GradThetaOptim, GradInputOptim
 )
 
 from sklearn import multioutput
@@ -193,8 +193,14 @@ class TorchNN(Machine):
         
         self._module = module
         self._objective = objective
-        self._theta_updater = theta_updater(module, objective) or GradThetaOptim (module, objective)
-        self._input_updater = input_updater(module, objective) or GradInputOptim(module, objective)
+        self._theta_updater =  (
+            theta_updater(module, objective)
+            if theta_updater is not None else GradThetaOptim (module, objective)
+        )
+        self._input_updater = (
+            input_updater(module, objective) 
+            if input_updater is not None else GradInputOptim(module, objective, skip_eval=True)
+        )
         self._fixed = fixed
         self._recorder = recorder
 
@@ -233,7 +239,7 @@ class TorchNN(Machine):
         y = self.forward(x)
         return y
 
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True, scorer: Scorer=None):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         if outs is not None:
             y = self.get_y_out(outs)
             x = self.get_in(outs)
@@ -243,7 +249,7 @@ class TorchNN(Machine):
             y = self._module(x)
 
         if update_theta and not self._fixed:
-            self._theta_updater.step(x, t, y=y, scorer=scorer)
+            self._theta_updater.step(x, t, y=y)
         
             if self._recorder:
                 self._recorder.record_theta(
@@ -254,8 +260,9 @@ class TorchNN(Machine):
             nn_utils.vector_to_parameters(self._theta_updater.theta, self._module.parameters())
         
         if update_inputs:
-            x_prime = self._input_updater.step(x, t, y=y, scorer=scorer)
-            
+            print(self._input_updater)
+            x_prime = self._input_updater.step(x, t, y=y)
+            print(x_prime)
             if self._recorder:
                 self._recorder.record_inputs(
                     id(self), x, x_prime,
@@ -272,13 +279,13 @@ class SklearnMachine(Machine):
 
     def __init__(
         self, module: SklearnModule, loss, 
-        theta_updater: SklearnOptimBuilder=None, input_updater: InputOptimBuilder=None,
+        theta_updater: SklearnOptimBuilder, input_updater: InputOptimBuilder,
         fixed: bool=False, partial: bool=False, recorder: Recorder=None
     ):
         super().__init__()
         self._module = module
         self._loss = loss
-        self._theta_updater = theta_updater(self._module)
+        self._theta_updater =  theta_updater(self._module)
         self._input_updater = input_updater(self._module, Skloss(self._module))
         self._fixed = fixed
         self._partial = partial
@@ -344,7 +351,7 @@ class SklearnMachine(Machine):
 
 class BlackboxMachine(Machine):
 
-    def __init__(self, f, loss, input_updater: InputOptimBuilder=None):
+    def __init__(self, f, loss, input_updater: InputOptimBuilder):
         super().__init__()
         self._f = f
         self._input_updater = input_updater(f, loss)
@@ -454,7 +461,6 @@ class Sequence(Machine):
     def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         if outs is None:
             _, outs = self.output_ys(x)
-        
         xs = [x]
         for y_i, machine in zip(outs[1:-1], self.machines[:-1]):
             xs.append(machine.get_y_out(y_i))
@@ -462,6 +468,7 @@ class Sequence(Machine):
         for i, (x_i, y_i, machine) in enumerate(zip(reversed(xs), reversed(outs[1:]), reversed(self.machines))):
             _update_inputs = i < len(xs) or update_inputs
             t = machine.backward_update(x_i, t, y_i, update_theta, _update_inputs)
+            print(t, machine)
         return t
 
 

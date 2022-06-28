@@ -151,7 +151,7 @@ class HillClimbThetaOptim(ThetaOptim):
             update_theta(self._net, theta_i)
             y = self._net(x)
             if scorer:
-                evaluations.append(scorer(y).item())
+                evaluations.append(scorer.assess(y).item())
             else:
                 evaluations.append(self._objective(y, t).item())
         
@@ -173,14 +173,14 @@ class HillClimbInputOptim(InputOptim):
         y = self._net(x.view(-1, *x.shape[2:]))
         y = y.view(x.shape[0], x.shape[1], *y.shape[1:])
         if scorer:
-            evaluations = scorer(y)
+            evaluations = scorer.assess(y)
         else:
             evaluations = self._objective.forward_multi(y, t)
         evaluations = [e.item() for e in evaluations]
         
         self._evaluations = evaluations
         return self._selector(x, evaluations)
-
+        
 
 class NRepeatInputOptim(InputOptim):
 
@@ -297,7 +297,7 @@ class NullThetaOptim(ThetaOptim):
 
     def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
         if scorer:
-            self._evaluations = scorer(self.f(x))
+            self._evaluations = scorer.assess(self.f(x))
         else:
             self._evaluations = self.loss(self.f(x), t)
 
@@ -399,7 +399,7 @@ class InputOptimBuilder(object):
     def step_hill_climber(self, perturber: SimpleHillClimbPerturber=None, selector: SimpleHillClimbSelector=None):
         perturber = perturber or SimpleHillClimbPerturber()
         selector = selector or SimpleHillClimbSelector()
-        self._optim = partial(HillClimbThetaOptim, perturber=perturber, selector=selector )
+        self._optim = partial(HillClimbInputOptim, perturber=perturber, selector=selector )
         return self
     
     def repeat(self, n_repetitions: int):
@@ -523,7 +523,7 @@ class GeneticThetaOptim(ThetaOptim):
             update_theta(self.net, chromosome)
             y = self.net.forward(x)
             if scorer:
-                evaluations.append(scorer(x))
+                evaluations.append(scorer.assess(x))
             else:
                 evaluations.append(self.objective(x, t))
         best = chromosomes[torch.argmax(evaluations)]
