@@ -4,14 +4,25 @@ from torch import nn
 from abc import ABC, abstractmethod
 from .modules import Objective
 from .optimizers import InputOptim, Scorer, ThetaOptim, get_theta, update_theta
+from .utils import expand_dim0
 
 
+def get_best(value: torch.Tensor, evaluations: torch.Tensor, maximize: bool=True):
 
-def get_best(value: torch.Tensor, evaluations, maximize: bool=True):
+    if evaluations.ndim == 2:
+        if maximize:
+            idx = torch.argmax(evaluations, 0, True)
+        else:
+            idx = torch.argmin(evaluations, 0, True)
+        idx.unsqueeze_(2)
+        idx = idx.repeat(1, 1, value.shape[2])
+        result = value.gather(0, idx)
+        return result[0]
+
     if maximize:
-        idx = np.argmax(evaluations)
+        idx = torch.argmax(evaluations)
     else:
-        idx = np.argmin(evaluations)
+        idx = torch.argmin(evaluations)
     return value[idx]
 
 
@@ -33,6 +44,7 @@ class HillClimbDiscreteMixin(HillClimbMixin):
 
     def _perturb(self, value):
         pass
+
 
 class HillClimbPerturber(ABC):
 
@@ -75,6 +87,21 @@ class GaussianHillClimbPerturber(HillClimbPerturber):
         return torch.cat([value.unsqueeze(0), y])
 
 
+class BinaryHillClimbPerturber(HillClimbPerturber):
+
+    def __init__(self, k: int=1, p: float=0.1, maximize: bool=False):
+        self.p = p
+        self.k = k  
+        self.maximize = maximize
+
+    def __call__(self, value: torch.Tensor, evaluations, dim: int=0) -> torch.Tensor:
+
+        keep = (torch.rand(self.k, *value.shape) > self.p).type(value.dtype)
+        values = value[None].repeat(self.k, *([1] * len(value.shape)))
+        values = keep * values + (1 - keep) * (1 - values)
+        return torch.cat([value[None], values])
+
+
 class HillClimbSelector(ABC):
 
     @abstractmethod
@@ -102,7 +129,7 @@ class GaussianHillClimbSelector(HillClimbSelector):
         self._step_evaluations = {}
         self._keep_s = True
 
-    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluations) -> torch.Tensor:
+    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluations, dim: int=0) -> torch.Tensor:
         best = get_best(value, evaluations, self.maximize)
         if self._diff is not None and self._momentum is not None:
             self._diff = (1 - self._momentum) * (best - cur) + self._momentum * self._diff
@@ -130,7 +157,7 @@ class HillClimbThetaOptim(ThetaOptim):
 
     def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
         assert t is not None
-        
+
         theta_base = self.theta
         theta = self._perturber(theta_base, self._evaluations)
         evaluations = []
@@ -141,7 +168,7 @@ class HillClimbThetaOptim(ThetaOptim):
                 evaluations.append(scorer.assess(y).item())
             else:
                 evaluations.append(self._objective(y, t).item())
-        theta_best =  self._selector(theta_base, theta, evaluations)
+        theta_best =  self._selector(theta_base, theta, torch.tensor(evaluations))
         update_theta(self._net, theta_best)
         self._evaluations = evaluations
 
@@ -158,12 +185,19 @@ class HillClimbInputOptim(InputOptim):
     def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
         x_pool = self._perturber(x, self._evaluations)
         y = self._net(x_pool.view(-1, *x_pool.shape[2:]))
-        y = y.view(x_pool.shape[0], x_pool.shape[1], *y.shape[1:])
+        # y = y.view(x_pool.shape[0], x_pool.shape[1], *y.shape[1:])
+        # y = y.transpose(1, 0)
         if scorer:
             evaluations = scorer.assess(y)
         else:
-            evaluations = self._objective.forward_multi(y, t)
-        evaluations = [e.item() for e in evaluations]
+            evaluations = self._objective.forward_multi(y, expand_dim0(t, x_pool.shape[0]))
         
-        self._evaluations = evaluations
-        return self._selector(x, x_pool, evaluations)
+        _evaluations = [e.item() for e in evaluations]
+        self._evaluations = _evaluations
+        # need to reshape the evaluations
+        # make evaluatinos a tensor
+        result = self._selector(
+            x, x_pool, 
+            evaluations.reshape(x_pool.shape[0], x_pool.shape[1])
+        )
+        return result

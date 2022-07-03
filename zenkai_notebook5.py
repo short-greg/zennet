@@ -89,14 +89,14 @@ n_epochs = 100
 transform = transforms.Compose([transforms.ToTensor()])
 
 # blobs = SimpleClassification(batch_size=batch_size)
-from zenkai.exp_utils.datasets import Digits
+from .exp_utils.datasets import Digits
 
 digits_trainset = Digits(True)
 # mnist_trainset = MNIST(root='./data', train=True, download=True, transform=transform)
 import torch.utils.data as data_utils
 
 dataloader = data_utils.DataLoader(digits_trainset, shuffle=True, batch_size=batch_size, drop_last=True)
-accuracies = []
+accuracies = [] 
 with tqdm.tqdm(total=len(dataloader) * n_epochs) as tq:   
     for _ in range(n_epochs):
         for x_i, t_i in dataloader:

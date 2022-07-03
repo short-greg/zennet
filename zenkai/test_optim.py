@@ -85,14 +85,24 @@ class TestSklearnThetaOptim:
 
     def test_evaluations_with_fit_is_one(self):
         optim = optimizers.SklearnThetaOptim(
-            sklearn.linear_model.LinearRegression(), False
+            sklearn.linear_model.LinearRegression(), 
+            modules.LossObjective(
+                nn.MSELoss(reduction='none'), 
+                modules.MeanReduction()
+            ), 
+            False
         )
         optim.step(th.randn(2, 2), th.randn(2))
         assert len(optim.evaluations) == 1
 
     def test_evaluations_with_partial_fit_is_one(self):
         optim = optimizers.SklearnThetaOptim(
-            sklearn.linear_model.SGDRegressor(), True
+            sklearn.linear_model.SGDRegressor(), 
+            modules.LossObjective(
+                nn.MSELoss(reduction='none'), 
+                modules.MeanReduction()
+            ), 
+            True
         )
         optim.step(th.randn(3, 2), th.randn(3))
         assert len(optim.evaluations) == 1

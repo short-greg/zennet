@@ -12,14 +12,11 @@ import numpy as np
 
 class SklearnModule(nn.Module):
 
-    def __init__(self, module, in_features: int, out_features: int, out_dtype: torch.dtype=torch.float):
+    def __init__(self, in_features: int, out_features: int, out_dtype: torch.dtype=torch.float):
         super().__init__()
-        self.module = module
-        self._in_features= in_features
-        self._out_featurse = out_features
+        self._in_features = in_features
+        self._out_features = out_features
         self.out_dtype = out_dtype
-        self._fitted = False
-        self._base = nn.Linear(in_features, out_features)
 
     @property
     def in_features(self):
@@ -27,7 +24,36 @@ class SklearnModule(nn.Module):
 
     @property
     def out_features(self):
-        return self._out_featurse
+        return self._out_features
+    
+    @abstractmethod
+    def fit(self, x: torch.Tensor, t: torch.Tensor):
+        pass
+
+    @abstractmethod
+    def partial_fit(self, x: torch.Tensor, t: torch.Tensor):
+        pass
+    
+    @abstractmethod
+    def score(self, x: torch.Tensor, t: torch.Tensor):
+        pass
+
+    def predict(self, x: torch.Tensor):
+        
+        return self.forward(x)
+    
+    @abstractmethod
+    def forward(self, x: torch.Tensor):
+        pass
+
+
+class SklearnWrapper(SklearnModule):
+
+    def __init__(self, module, in_features: int, out_features: int, out_dtype: torch.dtype=torch.float):
+        super().__init__(in_features, out_features, out_dtype)
+        self.module = module
+        self._fitted = False
+        self._base = nn.Linear(in_features, out_features)
     
     def fit(self, x: torch.Tensor, t: torch.Tensor):
         if self._fitted:
@@ -86,7 +112,7 @@ class Reduction(ABC):
         raise NotImplementedError
 
 
-class MeanReduction(ABC):
+class MeanReduction(Reduction):
     
     def __call__(self, grade):
         
@@ -113,16 +139,15 @@ class Objective(nn.Module):
     def reduce(self, grade):
         return self.reduction(grade)
     
-    def forward_multi(self, x, t):
-        t = t[None].repeat(x.size(0), *[1] * len(t.size()))
+    def forward_multi(self, x: torch.Tensor, t: torch.Tensor):
 
         n0 = x.size(0)
-        n1 = x.size(1)
-        t = t.view(t.shape[0] * t.shape[1], *t.shape[2:])
-        x = x.view(x.shape[0] * x.shape[1], *x.shape[2:])
+        # n1 = x.size(1)
+        # t = t.view(t.shape[0] * t.shape[1], *t.shape[2:])
+        # x = x.view(x.shape[0] * x.shape[1], *x.shape[2:])
 
         evaluation = self.eval(x, t)
-        evaluation = evaluation.view(n0, n1, *evaluation.shape[1:])
+        evaluation = evaluation.view(n0, *evaluation.shape[1:])
         reduced = self.reduction(evaluation)
         return reduced
 
@@ -153,49 +178,55 @@ class LossObjective(Objective):
         return self.loss(x, t)
 
 
-class Skloss(object):
+# class Skloss(object):
 
-    def __init__(self, sklearn_machine):
-        super().__init__()
-        self._machine = sklearn_machine
+#     def __init__(self, sklearn_module: SklearnModule, objective: Objective):
+#         super().__init__()
+#         self._machine = sklearn_module
+#         self._objective = objective
 
-    @property
-    def maximize(self) -> bool:
-        return False
+#     @property
+#     def maximize(self) -> bool:
+#         return False
+
+#     def forward_multi(self, x, t):
+#         y = self._machine(x)
+#         return self._objective.forward_multi(y, t)
     
-    def eval(self, x, t):
-        return self._machine.score(x, t)
+#     def eval(self, x, t):
+#         return self._machine.score(x, t)
 
 
 class Perceptron(SklearnModule):
 
     def __init__(self, in_features: int, out_features: int, lr: float=1e-2):
 
-        super().__init__()
+        super().__init__( in_features, out_features)
         self._weight = torch.randn(in_features, out_features) / math.sqrt(out_features)
         self._bias = torch.randn(out_features) / math.sqrt(out_features)
         self._lr = lr
 
     def fit(self, x: torch.Tensor, t: torch.Tensor):
-        raise NotImplementedError
+        # want to reset
+        self.partial_fit(x, t)
 
     def partial_fit(self, x: torch.Tensor, t: torch.Tensor):
         # https://towardsdatascience.com/perceptron-algorithm-in-python-f3ac89d2e537
         # https://www.simplilearn.com/tutorials/deep-learning-tutorial/perceptron#:~:text=Perceptron%20Learning%20Rule%20states%20that,a%20neuron%20fires%20or%20not.
+        
         y = self.forward(x)
+        y = y * 2 - 1
+        t = t * 2 - 1
+        
         m = (y == t).float()
         # think this is right but need to confirm
         self._weight += self._lr * (x.T @ (t - m))
 
     def score(self, x: torch.Tensor, t: torch.Tensor):
         y = self.forward(x)
-        return (y == t).mean().item()
-
-    def predict(self, x: torch.Tensor):
-        
-        return self.forward(x)
+        return (y == t).type_as(x).mean().item()
     
     def forward(self, x: torch.Tensor):
         
-        return ((x @ self._weight + self._bias) >= 0).float() * 2 - 1
+        return ((x @ self._weight + self._bias) >= 0).float()
         

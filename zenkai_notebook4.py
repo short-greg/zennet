@@ -32,6 +32,10 @@ np.random.seed(1)
 
 recorder = machinery.EuclidRecorder()
 
+class Threshold(nn.Module):
+
+    def forward(self, x):
+        return (x >= 0.0).type(x.dtype)
 
 # objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
 # net = nn.Linear(2, 2)
@@ -39,20 +43,25 @@ recorder = machinery.EuclidRecorder()
 
 objective2 = modules.LossObjective(nn.CrossEntropyLoss, reduction=modules.MeanReduction())
 objective1 = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
-net1 = nn.Sequential(nn.Linear(2, 4), nn.Sigmoid())
-net2 = nn.Sequential(nn.Linear(4, 3))
+net1 = nn.Sequential(nn.Linear(2, 16), Threshold())
+net2 = nn.Sequential(nn.Linear(16, 3))
 
-theta_builder = optim_builders.ThetaOptimBuilder().step_gaussian_hill_climber().repeat(4)
-input_builder = optim_builders.InputOptimBuilder().step_gaussian_hill_climber(momentum=None).repeat(4)
+theta_builder = optim_builders.ThetaOptimBuilder().step_gaussian_hill_climber().repeat(1)
+input_builder2 = optim_builders.InputOptimBuilder().step_binary_hill_climber(8, 0.1, False).repeat(1)
 
+theta_builder2 = optim_builders.ThetaOptimBuilder().grad()
+input_builder = optim_builders.InputOptimBuilder().step_gaussian_hill_climber() # (momentum=None).repeat(4)
 
-theta_builder2 = optim_builders.ThetaOptimBuilder().step_gaussian_hill_climber().repeat(4)
-input_builder2 = optim_builders.InputOptimBuilder().step_gaussian_hill_climber(momentum=None).repeat(4)
-
-
-layer1 = machinery.TorchNN(
-    net1, objective1, theta_builder, input_builder
+layer1 = machinery.SklearnMachine(
+    modules.Perceptron(2, 16), 
+    objective1,
+    optim_builders.SklearnOptimBuilder().partial(True).repeat(4),
+    input_builder, partial=True
 )
+
+# layer1 = machinery.TorchNN(
+#     net1, objective1, theta_builder, input_builder
+# )
 layer2 = machinery.TorchNN(
     net2, objective2, theta_builder2, input_builder2
 )
@@ -63,15 +72,16 @@ sequence = machinery.Sequence(
 # print('result: ', layer1.backward(X, t))
 
 
-batch_size = 2048
+batch_size = 128
 
 # n_iterations = len(X) // batch_size
 losses = []
-n_epochs = 20
+n_epochs = 10
 
 blobs = exp_utils.datasets.SimpleClassification(batch_size=batch_size)
 
 for _ in range(n_epochs):
+    batch_size = min(2048, batch_size * 2)
     n_iterations = blobs.n_iterations
     with tqdm.tqdm(total=n_iterations) as tq:   
         for x_i, t_i in blobs:

@@ -13,7 +13,7 @@ class TestSklearnModule:
 
         machine = sklearn.linear_model.LinearRegression()
         machine.fit(np.random.rand(3, 1), np.random.rand(3, 1))
-        module = modules.SklearnModule(machine, 1, 1)
+        module = modules.SklearnWrapper(machine, 1, 1)
         assert module.forward(torch.rand(3, 1)).size() == torch.Size([3, 1])
 
     def test_sklearn_module_with_2d_outputs_correct_size(self):
@@ -21,7 +21,7 @@ class TestSklearnModule:
         machine = sklearn.linear_model.LinearRegression()
         machine = sklearn.multioutput.MultiOutputRegressor(machine)
         machine.fit(np.random.rand(3, 3), np.random.rand(3, 3))
-        module = modules.SklearnModule(machine, 3, 3)
+        module = modules.SklearnWrapper(machine, 3, 3)
         assert module.forward(torch.rand(3, 3)).size() == torch.Size([3, 3])
 
 

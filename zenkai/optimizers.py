@@ -4,7 +4,7 @@ import sklearn
 import torch.nn as nn
 from abc import ABC, abstractmethod, abstractproperty
 import torch
-from .modules import Objective, SklearnModule, Skloss
+from .modules import Objective, SklearnModule
 from torch.nn import utils as nn_utils
 import numpy as np
 
@@ -62,10 +62,11 @@ class InputOptim(ABC):
 
 class SklearnThetaOptim(ThetaOptim):
 
-    def __init__(self, sklearn_machine, partial_fit: bool=False):
+    def __init__(self, sklearn_machine, objective: Objective, partial_fit: bool=False):
         self._evaluations = None
         self._partial_fit = partial_fit
         self._machine = sklearn_machine
+        self._objective = objective
     
     @property
     def theta(self):
@@ -76,7 +77,7 @@ class SklearnThetaOptim(ThetaOptim):
             self._machine.partial_fit(x, t)
         else:
             self._machine.fit(x, t)
-        self._evaluations = [self._machine.score(x, t)]
+        self._evaluations = [self._objective(self._machine(x), t)]
 
 
 class NRepeatInputOptim(InputOptim):
@@ -91,6 +92,8 @@ class NRepeatInputOptim(InputOptim):
         for i in range(self.n):
             x = self.optim.step(x, t, y, scorer=scorer)
             evaluations.append(self.optim.evaluations)
+            # y is unknown after first iteration
+            y = None
         self._evaluations = evaluations
         return x
 
@@ -111,6 +114,8 @@ class NRepeatThetaOptim(ThetaOptim):
         for i in range(self.n):
             self.optim.step(x, t, y, scorer)
             evaluations.append(self.optim.evaluations)
+            # y is unknown after first iteration
+            y = None
         self._evaluations = evaluations
 
 

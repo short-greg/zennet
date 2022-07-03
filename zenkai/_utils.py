@@ -1,145 +1,143 @@
-import typing
-import numpy as np
 import torch
-from dataclasses import dataclass
-from abc import ABC, abstractmethod, abstractproperty
 
 
-@dataclass
-class SignalType(object):
-
-    size: typing.Tuple[int]
-    dtype: str
 
 
-@dataclass
-class TorchSignalType(SignalType):
 
-    device: str
+# @dataclass
+# class Port(ABC):
 
+#     @abstractproperty
+#     def signal_type(self) -> SignalType:
+#         pass
 
-class Signal(ABC):
-
-    @abstractproperty
-    def signal_type(self) -> SignalType:
-        pass
-
-    @abstractmethod
-    def to_torch(self, to_device: str='cpu'):
-        pass
-
-    @abstractmethod
-    def to_numpy(self):
-        pass
-
-
-class TorchSignal(Signal):
-
-    def __init__(self, contents: torch.Tensor):
+#     def check_combatibility(self, other):
+#         other: Port = other
+#         if self.dtype != other.dtype:
+#             return False
         
-        self._contents = contents
-        self._signal_type = TorchSignalType(
-            dtype=contents.dtype,
-            size=tuple(self._contents.shape),
-            device=contents.device
-        )
+#         if self.size != other.size:
+#             return False
+#         return True
     
-    @property
-    def contents(self) -> torch.Tensor:
-        return self._contents
-
-    def to_torch(self, device: str='cpu'):
-
-        if device != self._contents.device:
-            return TorchSignal(self._contents.to(device))
-        
-        return self
-
-    def to_numpy(self):
-
-        return NumpySignal(self._contents.detach().cpu().numpy())
-
-
-class NumpySignal(Signal):
-
-    def __init__(self, contents: np.ndarray):
-        
-        self._contents = contents
-        self._signal_type = SignalType(
-            dtype=contents.dtype,
-            size=tuple(self._contents.shape)
-        )
+#     @abstractmethod
+#     def accept(self, x: Signal):
+#         pass
     
-    @property
-    def contents(self) -> torch.Tensor:
-        return self._contents
+#     @abstractmethod
+#     def to_list(self):
+#         pass
 
-    def to_torch(self, device: str='cpu') -> TorchSignal:
+# # all ports need to accept multiple inputs
 
-        return TorchSignal(torch.from_numpy(self._contents, device=device))
-        
+# class TorchPort(Port):
 
-    def to_numpy(self):
-
-        return self
-
-
-
-@dataclass
-class Port(ABC):
-
-    @abstractproperty
-    def signal_type(self) -> SignalType:
-        pass
-
-    def check_combatibility(self, other):
-        other: Port = other
-        if self.dtype != other.dtype:
-            return False
-        
-        if self.size != other.size:
-            return False
-        return True
+#     def __init__(self, torch_signal_type: TorchSignalType):
+#         self._signal_type = torch_signal_type
     
-    @abstractmethod
-    def accept(self, x: Signal):
-        pass
+#     @property
+#     def signal_type(self) -> TorchSignalType:
+#         return self._signal_type
+
+#     def check_combatibility(self, other: Port):
+#         if not super().check_combatibility(other):
+#             return False
+        
+#         if not isinstance(other, TorchPort):
+#             return False
+        
+#         if not self.device == other.device:
+#             return False
+
+#         return True
+
+# @dataclass
+# class NumpyPort(Port):
+
+#     def check_combatibility(self, other: Port):
+
+#         if not super().check_combatibility(other):
+#             return False
+        
+#         if not isinstance(other, NumpyPort):
+#             return False
+#         return True
+
+# @dataclass
+# class SignalType(object):
+
+#     size: typing.Tuple[int]
+#     dtype: str
+
+
+# @dataclass
+# class TorchSignalType(SignalType):
+
+#     device: str
+
+
+# class Signal(ABC):
+
+#     @abstractproperty
+#     def signal_type(self) -> SignalType:
+#         pass
+
+#     @abstractmethod
+#     def to_torch(self, to_device: str='cpu'):
+#         pass
+
+#     @abstractmethod
+#     def to_numpy(self):
+#         pass
+
+
+# class TorchSignal(Signal):
+
+#     def __init__(self, contents: torch.Tensor):
+        
+#         self._contents = contents
+#         self._signal_type = TorchSignalType(
+#             dtype=contents.dtype,
+#             size=tuple(self._contents.shape),
+#             device=contents.device
+#         )
     
-    @abstractmethod
-    def to_list(self):
-        pass
+#     @property
+#     def contents(self) -> torch.Tensor:
+#         return self._contents
 
-# all ports need to accept multiple inputs
+#     def to_torch(self, device: str='cpu'):
 
-class TorchPort(Port):
+#         if device != self._contents.device:
+#             return TorchSignal(self._contents.to(device))
+        
+#         return self
 
-    def __init__(self, torch_signal_type: TorchSignalType):
-        self._signal_type = torch_signal_type
+#     def to_numpy(self):
+
+#         return NumpySignal(self._contents.detach().cpu().numpy())
+
+
+# class NumpySignal(Signal):
+
+#     def __init__(self, contents: np.ndarray):
+        
+#         self._contents = contents
+#         self._signal_type = SignalType(
+#             dtype=contents.dtype,
+#             size=tuple(self._contents.shape)
+#         )
     
-    @property
-    def signal_type(self) -> TorchSignalType:
-        return self._signal_type
+#     @property
+#     def contents(self) -> torch.Tensor:
+#         return self._contents
 
-    def check_combatibility(self, other: Port):
-        if not super().check_combatibility(other):
-            return False
+#     def to_torch(self, device: str='cpu') -> TorchSignal:
+
+#         return TorchSignal(torch.from_numpy(self._contents, device=device))
         
-        if not isinstance(other, TorchPort):
-            return False
-        
-        if not self.device == other.device:
-            return False
 
-        return True
+#     def to_numpy(self):
 
-@dataclass
-class NumpyPort(Port):
+#         return self
 
-    def check_combatibility(self, other: Port):
-
-        if not super().check_combatibility(other):
-            return False
-        
-        if not isinstance(other, NumpyPort):
-            return False
-        return True

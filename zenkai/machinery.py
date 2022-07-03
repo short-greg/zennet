@@ -16,7 +16,7 @@ import torch.nn.utils as nn_utils
 from copy import deepcopy
 import pandas as pd
 
-from .modules import Objective, SklearnModule, Skloss
+from .modules import Objective, SklearnModule
 from .optimizers import (
     SklearnThetaOptim, GradInputOptim, GradThetaOptim, Scorer, GradThetaOptim, GradInputOptim
 )
@@ -181,12 +181,25 @@ def to_float(x: typing.List[th.Tensor]):
 
 
 class TorchNN(Machine):
+    """Layer that wraps a Torch neural network
+    """
 
     def __init__(
         self, module: nn.Module, objective: Objective , 
         theta_updater: ThetaOptimBuilder=None, input_updater: InputOptimBuilder=None,
         fixed: bool=False, 
-        recorder: Recorder=None):
+        recorder: Recorder=None
+    ):
+        """_summary_
+
+        Args:
+            module (nn.Module): Torch neural network
+            objective (Objective)
+            theta_updater (ThetaOptimBuilder, optional): Optimizer used to update theta. Defaults to None.
+            input_updater (InputOptimBuilder, optional): Optimizer used to update the inputs. Defaults to None.
+            fixed (bool, optional): Whether theta is fixed or learnable. Defaults to False.
+            recorder (Recorder, optional): Recorder to record the learning progress. Defaults to None.
+        """
         
         self._module = module
         self._objective = objective
@@ -272,17 +285,29 @@ class TorchNN(Machine):
 
 
 class SklearnMachine(Machine):
+    """Layer that wraps a scikit-learn machine
+    """
 
     def __init__(
-        self, module: SklearnModule, loss, 
+        self, module: SklearnModule, objective: Objective, 
         theta_updater: SklearnOptimBuilder, input_updater: InputOptimBuilder,
         fixed: bool=False, partial: bool=False, recorder: Recorder=None
     ):
+        """initializer
+        Args:
+            module (SklearnModule)
+            objective (Objective)
+            theta_updater (SklearnOptimBuilder)
+            input_updater (InputOptimBuilder): _description_
+            fixed (bool, optional): Whether the parameters are fixed. Defaults to False.
+            partial (bool, optional): Whether to use partial_fit() (True) or fit(). Defaults to False.
+            recorder (Recorder, optional): Record the results of the update. Defaults to None.
+        """
         super().__init__()
         self._module = module
-        self._loss = loss
-        self._theta_updater =  theta_updater(self._module)
-        self._input_updater = input_updater(self._module, Skloss(self._module))
+        self._objective = objective
+        self._theta_updater = theta_updater(self._module, objective)
+        self._input_updater = input_updater(self._module, objective)
         self._fixed = fixed
         self._partial = partial
         self._fit = False
@@ -297,7 +322,7 @@ class SklearnMachine(Machine):
         #     y = self.forward(x)
         # else:
         #     outs = outs
-        return self._loss(y, t)
+        return self._objective(y, t)
 
     def output_ys(self, x):
         y = self.forward(x)
@@ -346,19 +371,28 @@ class SklearnMachine(Machine):
 
 
 class BlackboxMachine(Machine):
+    """Layer that wraps a function that does not learn
+    """
 
-    def __init__(self, f, loss, input_updater: InputOptimBuilder):
+    def __init__(self, f, objective: Objective, input_updater: InputOptimBuilder):
+        """initializer
+
+        Args:
+            f: Function/Callable wrapped by layer
+            loss (_type_): _description_
+            input_updater (InputOptimBuilder): _description_
+        """
         super().__init__()
         self._f = f
         self._input_updater = input_updater(f, loss)
-        self._loss = loss
+        self._objective = objective
 
     def assess(self, x, t, outs=None):
         if y is None:
             y = self.forward(x)
         else:
             outs = outs
-        return self._loss(y, t)
+        return self._objective(y, t)
 
     def output_ys(self, x):
         y = self.forward(x)
@@ -384,6 +418,8 @@ class BlackboxMachine(Machine):
 
 
 class SequenceScorer(Scorer):
+    """Outputs the score for a Sequence
+    """
 
     def __init__(self, machines: typing.List[Machine], t: th.Tensor, outer: Scorer=None):
 
@@ -402,13 +438,22 @@ class SequenceScorer(Scorer):
 
     @property
     def maximize(self):
-
         return self._machines[-1].maximize
 
 
 class Sequence(Machine):
+    """Wraps multiple layers that execut in succession
+    """
 
     def __init__(self, machines: typing.List[Machine]):
+        """intializer
+
+        Args:
+            machines (typing.List[Machine]): Machines to execute
+
+        Raises:
+            ValueError: If the sequence is empty
+        """
         if len(machines) == 0:
             raise ValueError(f'Length of sequence must be greater than 0')
         self.machines = machines
