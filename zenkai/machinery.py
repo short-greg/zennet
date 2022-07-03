@@ -190,7 +190,7 @@ class TorchNN(Machine):
         fixed: bool=False, 
         recorder: Recorder=None
     ):
-        """_summary_
+        """initializer
 
         Args:
             module (nn.Module): Torch neural network
@@ -384,7 +384,7 @@ class BlackboxMachine(Machine):
         """
         super().__init__()
         self._f = f
-        self._input_updater = input_updater(f, loss)
+        self._input_updater = input_updater(f, objective)
         self._objective = objective
 
     def assess(self, x, t, outs=None):
