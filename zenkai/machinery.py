@@ -16,7 +16,9 @@ import torch.nn.utils as nn_utils
 from copy import deepcopy
 import pandas as pd
 
-from .modules import Objective, SklearnModule
+from zenkai import utils
+
+from .modules import SklearnModule
 from .optimizers import (
     SklearnThetaOptim, GradInputOptim, GradThetaOptim, Scorer, GradThetaOptim, GradInputOptim
 )
@@ -24,90 +26,11 @@ from .hill_climbing import HillClimbInputOptim
 from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
 
 from sklearn import multioutput
+from .base import Objective, Recorder
 
 torch_id = "torch"
 numpy_id = "numpy"
 null_id = "null"
-
-
-
-class Recorder(ABC):
-
-    @abstractmethod
-    def adv(self):
-        pass
-
-    @abstractmethod
-    def record_inputs(self, layer, prev_inputs, cur_inputs, evaluations):
-        pass
-
-    @abstractmethod
-    def record_theta(self, layer, prev_theta, cur_theta, evaluations):
-        pass
-    
-    @abstractproperty
-    def pos(self):
-        pass
-
-    @abstractproperty
-    def theta_df(self):
-        pass
-
-    @abstractproperty
-    def input_df(self):
-        pass
-
-
-class DType(object):
-
-    @abstractproperty
-    def dtype(self):
-        raise NotImplementedError
-
-
-class THDType(DType):
-
-    def __init__(self, dtype: th.dtype):
-        self._dtype = dtype
-
-    @property
-    def dtype(self):
-        return self._dtype
-
-    @property
-    def id(self):
-        return torch_id
-
-
-class NPDType(DType):
-
-    def __init__(self, dtype: np.dtype):
-        self._dtype = dtype
-
-    @property
-    def dtype(self):
-        return self._dtype
-
-    @property
-    def id(self):
-        return "numpy"
-
-
-class Shape(object):
-
-    def __init__(self, *args: int):
-        self._shape = args
-
-    def dim(self):
-        return len(self._shape)
-
-    @classmethod
-    def from_torch(self, size: th.Size):
-        return Shape(*size)
-
-    @classmethod
-    def from_numpy(self, size: np.shape):
-        return Shape(*size)
 
 
 class Device(ABC):
@@ -136,14 +59,6 @@ class NullDevice(Device):
     @property
     def id(self) -> str:
         return null_id
-
-
-@dataclass
-class Port(object):
-
-    dtype: DType
-    shape: Shape
-    device: Device
 
 
 class Machine(ABC):
@@ -216,6 +131,7 @@ class TorchNN(Machine):
 
     def assess(self, y, t):
         return self._objective(y, t)
+    
 
     def fix(self, fixed: bool=True):
         self._fixed = fixed
@@ -231,6 +147,14 @@ class TorchNN(Machine):
 
     def get_in(self, outs):
         return outs[0]
+    
+    @property
+    def theta(self):
+        return utils.get_parameters(self._module)
+    
+    @theta.setter
+    def theta(self, theta: th.Tensor):
+        utils.set_parameters(theta, self._module)
 
     def forward(self, x):
         return self._module.forward(x)
@@ -533,41 +457,6 @@ class Processor(ABC):
         pass
 
 
-class TH2NP(Processor):
-
-    def output_ys(self, x):
-        y = self.forward(x)
-        return y, y
-
-    def forward(self, x):
-        return x.detach().cpu().numpy()
-
-    def backward(self, x, t, outs=None):
-        return th.from_numpy(t)
-
-    def get_y_out(self, outs):
-        return outs
-
-
-class NP2TH(Processor):
-
-    def __init__(self, dtype: th.dtype=th.float32):
-        self.dtype = dtype
-
-    def output_ys(self, x):
-        y = self.forward(x)
-        return y, y
-
-    def forward(self, x):
-        return th.tensor(x, dtype=self.dtype)
-        # return th.from_numpy(x)
-
-    def backward(self, x, t, outs=None):
-        return t.detach().cpu().numpy()
-
-    def get_y_out(self, outs):
-        return outs
-
 
 class CompositeProcessor(Processor):
 
@@ -760,4 +649,126 @@ class EuclidRecorder(Recorder):
 # otherwise the changes will be too great
 # 
 
+
+class Transform(Machine):
+    """Layer that transforms an input and does inverse transform on targets
+    """
+
+    def __init__(
+        self, f, inv_f, objective: Objective , recorder: Recorder=None
+    ):
+        """initializer
+
+        Args:
+            objective (Objective)
+            recorder (Recorder, optional): Recorder to record the learning progress. Defaults to None.
+        """
+        self._f = f
+        self._inv_f = inv_f
+        self._objective = objective
+        self._recorder = recorder
+
+    def assess(self, y, t):
+        return self._objective(y, t)
+
+    def output_ys(self, x):
+        x = x.detach().requires_grad_()
+        x.retain_grad()
+        y = self.forward(x)
+        return y, [x, y]
+
+    def get_y_out(self, outs):
+        return outs[1]
+
+    def get_in(self, outs):
+        return outs[0]
+
+    def forward(self, x):
+        return self._f(x)
+    
+    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+        return self.forward(x)
+
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
+        if outs is not None:
+            y = self.get_y_out(outs)
+            x = self.get_in(outs)
+        else:
+            x = x.detach().requires_grad_()
+            x.retain_grad()
+            y = self._f(x)
+
+        if update_inputs:
+            x_prime = self._inv_f(y)
+            if self._recorder:
+                self._recorder.record_inputs(
+                    id(self), x, x_prime,
+                    # TODO ADD IN EVALUATIONS???
+                    evaluations=[] # to_float(self._input_updater.evaluations)
+                )
+            assert x_prime is not None, f'{self._inv_f}'
+            return x_prime
+
+
+class TargetTransform(Machine):
+    """Layer that transforms an input and does inverse transform on targets
+    """
+
+    def __init__(
+        self, f, inv_f, objective: Objective , recorder: Recorder=None
+    ):
+        """initializer
+
+        Args:
+            objective (Objective)
+            recorder (Recorder, optional): Recorder to record the learning progress. Defaults to None.
+        """
+        self._f = f
+        self._inv_f = inv_f
+        self._objective = objective
+        self._recorder = recorder
+
+    def assess(self, y, t):
+        return self._objective(y, t)
+
+    def output_ys(self, x):
+        x = x.detach().requires_grad_()
+        x.retain_grad()
+        y = self.forward(x)
+        return y, [x, y]
+
+    def get_y_out(self, outs):
+        return outs[1]
+
+    def get_in(self, outs):
+        return outs[0]
+
+    def forward(self, x):
+        return self._f(x)
+    
+    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+        return self.forward(x)
+
+    def backward_update(self, x: th.Tensor, t: th.Tensor, outs=None, update_theta: bool=True, update_inputs: bool= True):
+        if outs is not None:
+            y = self.get_y_out(outs)
+            x = self.get_in(outs)
+        else:
+            x = x.detach().requires_grad_()
+            x.retain_grad()
+            y = self._f(x)
+
+        if update_inputs:
+
+            # need to use the objective
+            y_prime = self._objective.update(y, t)
+            x_prime = self._inv_f(y_prime)
+            if self._recorder:
+                self._recorder.record_inputs(
+                    id(self), x, x_prime,
+                    # TODO ADD IN EVALUATIONS???
+                    evaluations=to_float(self._objective.evaluations)
+                )
+            assert x_prime is not None, f'{self._inv_f}'
+            return x_prime
 

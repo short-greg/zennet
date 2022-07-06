@@ -1,5 +1,5 @@
 import torch
-from zenkai.machinery import SklearnMachine
+from .machinery import SklearnMachine
 from . import modules
 import sklearn.linear_model
 import sklearn.multioutput
