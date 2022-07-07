@@ -1,29 +1,11 @@
-import numpy as np
+import typing
 import torch
 from torch import nn
 from abc import ABC, abstractmethod
-from .modules import Objective
-from .optimizers import InputOptim, Scorer, ThetaOptim, get_theta, update_theta
 from .utils import expand_dim0
+from .machinery import TorchNN
+from .base import Objective, Evaluation, InputOptim, ThetaOptim, get_best
 
-
-def get_best(value: torch.Tensor, evaluations: torch.Tensor, maximize: bool=True):
-
-    if evaluations.ndim == 2:
-        if maximize:
-            idx = torch.argmax(evaluations, 0, True)
-        else:
-            idx = torch.argmin(evaluations, 0, True)
-        idx.unsqueeze_(2)
-        idx = idx.repeat(1, 1, value.shape[2])
-        result = value.gather(0, idx)
-        return result[0]
-
-    if maximize:
-        idx = torch.argmax(evaluations)
-    else:
-        idx = torch.argmin(evaluations)
-    return value[idx]
 
 
 class HillClimbMixin(ABC):
@@ -105,7 +87,7 @@ class BinaryHillClimbPerturber(HillClimbPerturber):
 class HillClimbSelector(ABC):
 
     @abstractmethod
-    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluations) -> torch.Tensor:
+    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluation: Evaluation) -> typing.Tuple[torch.Tensor, Evaluation]:
         pass
 
 
@@ -114,8 +96,8 @@ class SimpleHillClimbSelector(HillClimbSelector):
     def __init__(self, maximize: bool=False):
         self.maximize = maximize
     
-    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluations) -> torch.Tensor:
-        return get_best(value, evaluations, self.maximize)
+    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluation: Evaluation) -> typing.Tuple[torch.Tensor, Evaluation]:
+        return get_best(value, evaluation, self.maximize), evaluation
 
 
 class GaussianHillClimbSelector(HillClimbSelector):
@@ -129,8 +111,8 @@ class GaussianHillClimbSelector(HillClimbSelector):
         self._step_evaluations = {}
         self._keep_s = True
 
-    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluations, dim: int=0) -> torch.Tensor:
-        best = get_best(value, evaluations, self.maximize)
+    def __call__(self, cur: torch.Tensor, value: torch.Tensor, evaluation: Evaluation) -> typing.Tuple[torch.Tensor, Evaluation]:
+        best, evaluation = get_best(value, evaluation, self.maximize)
         if self._diff is not None and self._momentum is not None:
             self._diff = (1 - self._momentum) * (best - cur) + self._momentum * self._diff
             x_updated = cur + self._diff
@@ -139,65 +121,52 @@ class GaussianHillClimbSelector(HillClimbSelector):
             x_updated = cur + self._diff
         else:
             x_updated = best
-        return x_updated
+        return x_updated, evaluation
 
 
 class HillClimbThetaOptim(ThetaOptim):
 
-    def __init__(self, net: nn.Module, objective: Objective, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
+    def __init__(self, machine: TorchNN, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
         super().__init__()
-        self._objective = objective
-        self._net = net
+        self._machine = machine
         self._perturber = perturber or SimpleHillClimbPerturber()
         self._selector = selector or SimpleHillClimbSelector()
-    
-    @property
-    def theta(self):
-        return get_theta(self._net)
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None):
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> Evaluation:
         assert t is not None
 
-        theta_base = self.theta
+        theta_base = self._machine.theta
         theta = self._perturber(theta_base, self._evaluations)
         evaluations = []
         for theta_i in theta:
-            update_theta(self._net, theta_i)
-            y = self._net(x)
-            if scorer:
-                evaluations.append(scorer.assess(y).item())
-            else:
-                evaluations.append(self._objective(y, t).item())
-        theta_best =  self._selector(theta_base, theta, torch.tensor(evaluations))
-        update_theta(self._net, theta_best)
-        self._evaluations = evaluations
+            self._machine.theta = theta_i
+            evaluations.append(objective(x, t))
+
+        evaluation = Evaluation.from_list(evaluation)
+        theta_best, evaluation =  self._selector(theta_base, theta, evaluation)
+        
+        self._machine.theta = theta_best
+        return evaluation
 
 
 class HillClimbInputOptim(InputOptim):
 
-    def __init__(self, net: nn.Module, objective: Objective, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
+    def __init__(self, net: nn.Module, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
         super().__init__()
-        self._objective = objective
         self._net = net
         self._perturber = perturber or SimpleHillClimbPerturber()
         self._selector = selector or SimpleHillClimbSelector()
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor) -> typing.Tuple[torch.Tensor, Evaluation]:
         x_pool = self._perturber(x, self._evaluations)
         y = self._net(x_pool.view(-1, *x_pool.shape[2:]))
         # y = y.view(x_pool.shape[0], x_pool.shape[1], *y.shape[1:])
         # y = y.transpose(1, 0)
-        if scorer:
-            evaluations = scorer.assess(y)
-        else:
-            evaluations = self._objective.forward_multi(y, expand_dim0(t, x_pool.shape[0]))
         
-        _evaluations = [e.item() for e in evaluations]
-        self._evaluations = _evaluations
-        # need to reshape the evaluations
-        # make evaluatinos a tensor
-        result = self._selector(
-            x, x_pool, 
-            evaluations.reshape(x_pool.shape[0], x_pool.shape[1])
+        evaluation = objective.forward(y, expand_dim0(t, x_pool.shape[0]), True)
+        # regularized = [e for e in evaluation.regularized]
+
+        return self._selector(
+            x, x_pool, evaluation
+            # evaluation.regularized.reshape(x_pool.shape[0], x_pool.shape[1])
         )
-        return result

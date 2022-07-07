@@ -2,8 +2,11 @@ from abc import ABC, abstractmethod
 import typing
 import torch
 import torch.nn as nn
+
+from zenkai.machinery import TorchNN
 from .modules import Objective
-from .optimizers import ThetaOptim, get_theta, Scorer, update_theta
+# from .optimizers import , get_theta, Scorer, update_theta
+from .base import Evaluation, ThetaOptim, get_best
 
 
 class Initializer(ABC):
@@ -154,45 +157,34 @@ class MultiProcessor(GeneProcessor):
 class GeneticThetaOptim(ThetaOptim):
 
     def __init__(
-        self, net: nn.Module, objective: Objective, 
+        self, machine: TorchNN, objective: Objective, 
         initializer: Initializer, pair_selector: PairSelector, 
         breeder: Breeder, processors: typing.List[GeneProcessor]=None, 
         elitism: Elitism=None
     ):
         
         super().__init__()
-        self.net = net
-        self._chromosomes = initializer(get_theta(net))
+        self._machine = machine
+        self._chromosomes = initializer(machine.theta)
         self.objective = objective
         self.pair_selector = pair_selector
         self.breeder = breeder
         self.processors = MultiProcessor(processors)
         self.elitism = elitism
-    
-    def select(self):
-        return self.selector(self._chromosomes, self._evaluations)
 
-    def recombine(self, chromosome_pairs: torch.Tensor):
-        return self.recombiner(chromosome_pairs, self._chromosomes, self._evaluations)
-
-    def step(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, scorer: Scorer=None) -> torch.Tensor:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> Evaluation:
         chromosome_pairs = self.pair_selector()
         children = self.breeder(chromosome_pairs)
         chromosomes = self.processors(children)
-
-        # make sure fitness is a tensor
 
         if self.elitism is not None:
             children = self.elitism()
         evaluations = []
         for child in children:
-            update_theta(self.net, child)
-            y = self.net.forward(x)
-            if scorer:
-                evaluations.append(scorer.assess(x))
-            else:
-                evaluations.append(self.objective(x, t))
-        best = chromosomes[torch.argmax(evaluations)]
+            self._machine.theta = child
+            evaluations.append(objective(x, t))
+
+        best, evaluation = get_best(chromosomes, Evaluation.from_list(evaluations), objective.maximize)
         self._chromosomes = children
-        self._evaluations = evaluations
-        update_theta(self.net, best)
+        self._machine.theta = best
+        return evaluation

@@ -1,6 +1,8 @@
+import typing
 import torch
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 import torch.nn as nn
+
 
 def expand_dim0(x: torch.Tensor, k: int, reshape: bool=True):
     y = x[None].repeat(k, *([1] * len(x.size())))
@@ -24,3 +26,5 @@ def get_parameters(net: nn.Module):
     return parameters_to_vector(net.parameters())
     
 
+def to_float(x: typing.List[torch.Tensor]):
+    return list(map(lambda xi: xi.mean().item(), x))

@@ -2,97 +2,24 @@
 
 from abc import ABC, abstractclassmethod, abstractmethod
 from functools import partial, singledispatchmethod
-import statistics
 import typing
-import sklearn
 import torch as th
 import torch.nn as nn
-
-from abc import ABC, abstractproperty
-from dataclasses import dataclass
-import torch as th
+from abc import ABC
+import torch
 import numpy as np
 import torch.nn.utils as nn_utils
-from copy import deepcopy
 import pandas as pd
 
-from zenkai import utils
+from . import utils
+from .objectives import SequenceObjective
 
 from .modules import SklearnModule
 from .optimizers import (
-    SklearnThetaOptim, GradInputOptim, GradThetaOptim, Scorer, GradThetaOptim, GradInputOptim
+    GradInputOptim, GradThetaOptim, Scorer, GradThetaOptim, GradInputOptim
 )
-from .hill_climbing import HillClimbInputOptim
 from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
-
-from sklearn import multioutput
-from .base import Objective, Recorder
-
-torch_id = "torch"
-numpy_id = "numpy"
-null_id = "null"
-
-
-class Device(ABC):
-
-    @abstractproperty
-    def id(self) -> str:
-        raise NotImplementedError
-
-
-class THDevice(Device):
-
-    def __init__(self, device):
-        self._device = device
-
-    @property
-    def device(self):
-        return self._device
-
-    @property
-    def id(self) -> str:
-        return torch_id
-
-
-class NullDevice(Device):
-
-    @property
-    def id(self) -> str:
-        return null_id
-
-
-class Machine(ABC):
-
-    @abstractmethod
-    def assess(self, y, t):
-        pass
-
-    @abstractmethod
-    def output_ys(self, x) -> typing.Tuple[typing.Any, typing.Any]:
-        pass
-
-    @abstractmethod
-    def forward(self, x):
-        pass
-
-    @abstractmethod
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
-        pass
-
-    @abstractmethod
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
-        pass
-
-    @abstractmethod
-    def get_y_out(self, outs):
-        pass
-    
-    def __call__(self, x):
-        return self.forward(x)
-
-
-def to_float(x: typing.List[th.Tensor]):
-    return list(map(lambda xi: xi.mean().item(), x))
+from .base import Objective, ObjectivePair, Processor, Machine
 
 
 class TorchNN(Machine):
@@ -102,8 +29,7 @@ class TorchNN(Machine):
     def __init__(
         self, module: nn.Module, objective: Objective , 
         theta_updater: ThetaOptimBuilder=None, input_updater: InputOptimBuilder=None,
-        fixed: bool=False, 
-        recorder: Recorder=None
+        fixed: bool=False
     ):
         """initializer
 
@@ -113,9 +39,7 @@ class TorchNN(Machine):
             theta_updater (ThetaOptimBuilder, optional): Optimizer used to update theta. Defaults to None.
             input_updater (InputOptimBuilder, optional): Optimizer used to update the inputs. Defaults to None.
             fixed (bool, optional): Whether theta is fixed or learnable. Defaults to False.
-            recorder (Recorder, optional): Recorder to record the learning progress. Defaults to None.
         """
-        
         self._module = module
         self._objective = objective
         self._theta_updater =  (
@@ -127,12 +51,10 @@ class TorchNN(Machine):
             if input_updater is not None else GradInputOptim(module, objective, skip_eval=True)
         )
         self._fixed = fixed
-        self._recorder = recorder
 
     def assess(self, y, t):
         return self._objective(y, t)
     
-
     def fix(self, fixed: bool=True):
         self._fixed = fixed
 
@@ -153,23 +75,18 @@ class TorchNN(Machine):
         return utils.get_parameters(self._module)
     
     @theta.setter
-    def theta(self, theta: th.Tensor):
+    def theta(self, theta: torch.Tensor):
         utils.set_parameters(theta, self._module)
 
     def forward(self, x):
         return self._module.forward(x)
     
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+    def forward_update(self, x, t, objective: Objective=None, update_theta: bool=True):
 
         if update_theta and not self._fixed:
-            self._theta_updater.step(x, t, scorer=scorer)
-            if self._recorder:
-                self._recorder.record_theta(
-                    id(self), nn_utils.parameters_to_vector(self._module.parameters()), self._theta_updater.theta,
-                    to_float(self._theta_updater.evaluations)
-                )
-            nn_utils.vector_to_parameters(self._theta_updater.theta, self._module.parameters())
-        
+            objective = self._theta_objective(x, t) if objective is None else ObjectivePair(self._theta_objective(x, t), objective)
+            self._theta_updater.step(x, t, objective=objective)
+ 
         y = self.forward(x)
         return y
 
@@ -182,25 +99,11 @@ class TorchNN(Machine):
             x.retain_grad()
             y = self._module(x)
 
-        if update_theta and not self._fixed:
-            self._theta_updater.step(x, t, y=y)
-        
-            if self._recorder:
-                self._recorder.record_theta(
-                    id(self), nn_utils.parameters_to_vector(self._module.parameters()), 
-                    self._theta_updater.theta,
-                    evaluations=to_float(self._theta_updater.evaluations)
-                )
-            nn_utils.vector_to_parameters(self._theta_updater.theta, self._module.parameters())
+        if update_theta and not self._fixed:            
+            self._theta_updater.step(x, t, objective=self._theta_objective(x, t), y=y)
         
         if update_inputs:
-            x_prime = self._input_updater.step(x, t, y=y)
-            if self._recorder:
-                self._recorder.record_inputs(
-                    id(self), x, x_prime,
-                    evaluations=to_float(self._input_updater.evaluations)
-                )
-            assert x_prime is not None, f'{self._input_updater}'
+            x_prime, _ = self._input_updater.step(x, t, objective=self._input_objective(x, t), y=y)
             return x_prime
 
     @property
@@ -215,7 +118,7 @@ class SklearnMachine(Machine):
     def __init__(
         self, module: SklearnModule, objective: Objective, 
         theta_updater: SklearnOptimBuilder, input_updater: InputOptimBuilder,
-        fixed: bool=False, partial: bool=False, recorder: Recorder=None
+        fixed: bool=False, partial: bool=False
     ):
         """initializer
         Args:
@@ -225,7 +128,6 @@ class SklearnMachine(Machine):
             input_updater (InputOptimBuilder): _description_
             fixed (bool, optional): Whether the parameters are fixed. Defaults to False.
             partial (bool, optional): Whether to use partial_fit() (True) or fit(). Defaults to False.
-            recorder (Recorder, optional): Record the results of the update. Defaults to None.
         """
         super().__init__()
         self._module = module
@@ -235,7 +137,6 @@ class SklearnMachine(Machine):
         self._fixed = fixed
         self._partial = partial
         self._fit = False
-        self._recorder = recorder
 
     def fix(self, fixed: bool=True):
         self._fixed = fixed
@@ -252,7 +153,7 @@ class SklearnMachine(Machine):
         y = self.forward(x)
         return y, [x, y]
 
-    def forward(self, x: th.Tensor):
+    def forward(self, x: torch.Tensor):
         device = x.device
         y_np = self._module.forward(x)
         return y_np.to(device)
@@ -278,19 +179,14 @@ class SklearnMachine(Machine):
     def get_in(self, outs):
         return outs[0]
     
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
+    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool=True):
         
         if update_theta and not self._fixed:
             self._theta_updater.step(x, t)
         
         if update_inputs:
-            x_prime = self._input_updater.step(x, t)
-            
-            if self._recorder:
-                self._recorder.record_inputs(
-                    id(self), x, x_prime,
-                    evaluations=to_float(self._input_updater.evaluations)
-                )
+            x_prime = self._input_updater.step(x, t, objective=self._input_objective(x, t))
+    
             return x_prime
 
 
@@ -322,10 +218,10 @@ class BlackboxMachine(Machine):
         y = self.forward(x)
         return y, [x, y]
 
-    def forward(self, x: th.Tensor):
+    def forward(self, x: torch.Tensor):
         return self._f(x)
 
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+    def forward_update(self, x, t, objective: Objective=None, update_theta: bool=True):
         y = self.forward(x)
         return y
 
@@ -338,31 +234,7 @@ class BlackboxMachine(Machine):
     def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
         
         if update_inputs:
-            return self._input_updater.step(x, t)
-
-
-class SequenceScorer(Scorer):
-    """Outputs the score for a Sequence
-    """
-
-    def __init__(self, machines: typing.List[Machine], t: th.Tensor, outer: Scorer=None):
-
-        if len(machines) == 0:
-            raise RuntimeError("The number of machines must be greater than 0.")
-        self._machines = machines
-        self._outer = outer
-        self._t = t
-
-    def assess(self, x):
-        for machine in self._machines:
-            x = machine.forward(x)
-        if self._outer:
-            return self._outer.assess(x)
-        return self._machines[-1].assess(x, self._t)
-
-    @property
-    def maximize(self):
-        return self._machines[-1].maximize
+            return self._input_updater.step(x, t, objective=self._input_objective(x, t))
 
 
 class Sequence(Machine):
@@ -408,7 +280,7 @@ class Sequence(Machine):
             y = layer.forward(y)
         return y
 
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+    def forward_update(self, x, t, objective: Objective=None, update_theta: bool=True):
         if not update_theta:
             y = self.forward(x)
             return y
@@ -416,10 +288,10 @@ class Sequence(Machine):
         y = x
         for i, machine in enumerate(self.machines):
             if i < len(self.machines) - 1:
-                cur_scorer = SequenceScorer(self.machines[i + 1:], t, scorer)
+                cur_objective = SequenceObjective(self.machines[i + 1:], t, objective)
             else:
-                cur_scorer = scorer
-            y = machine.forward_update(y, t, cur_scorer, update_theta)
+                cur_objective = objective
+            y = machine.forward_update(y, t, cur_objective, update_theta)
 
         return y
 
@@ -436,26 +308,6 @@ class Sequence(Machine):
         
             assert t is not None, f'{machine}'
         return t
-
-
-class Processor(ABC):
-
-    @abstractmethod
-    def output_ys(self, x):
-        pass
-
-    @abstractmethod
-    def forward(self, x):
-        pass
-
-    @abstractmethod
-    def backward(self, x, t, outs=None):
-        pass
-
-    @abstractmethod
-    def get_y_out(self, outs):
-        pass
-
 
 
 class CompositeProcessor(Processor):
@@ -517,6 +369,7 @@ class Processed(Machine):
         return self.machine.forward(y)
     
     def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+        #  objective=self._input_objective(x, t)
         x = self.processors.forward(x)
         return self.machine.forward_update(x, t, scorer, update_theta)
 
@@ -546,127 +399,21 @@ class WeightedLoss(nn.Module):
         return self.weight * self.nn_loss(x, t)
 
 
-class EuclidRecorder(Recorder):
-
-    def __init__(self):
-        
-        self._layer_results = {}
-        self._cur_index = 0
-        self._layer_map = {}
-        self._layer_count = 0
-
-    def adv(self):
-        self._cur_index += 1
-    
-    def get_or_set_layer_id(self, layer):
-        if layer not in self._layer_map:
-            self._layer_map[layer] = self._layer_count
-            self._layer_count += 1
-        return self._layer_map[layer]
-
-    def record_inputs(self, layer, prev_inputs, cur_inputs, evaluations):
-
-        layer = self.get_or_set_layer_id(layer)
-        if layer not in self._layer_results:
-            self._layer_results[layer] = []
-        if self._cur_index not in self._layer_results[layer]:
-            self._layer_results[layer] += [{}] * (self._cur_index - len(self._layer_results[layer]) + 1)
-        deviation = th.sqrt(th.sum((prev_inputs - cur_inputs) ** 2)).item()
-        self._layer_results[layer][self._cur_index]['inputs'] = dict(
-            deviation=deviation,
-            evaluations=evaluations
-        )
-
-    def record_theta(self, layer, prev_theta, cur_theta, evaluations):
-
-        layer = self.get_or_set_layer_id(layer)
-        if layer not in self._layer_results:
-            self._layer_results[layer] = []
-        if len(self._layer_results[layer]) <= self._cur_index:
-
-            self._layer_results[layer] += [{}] * (self._cur_index - len(self._layer_results[layer]) + 1)
-        deviation = th.sqrt(th.sum((prev_theta - cur_theta) ** 2)).item()
-        self._layer_results[layer][self._cur_index]['theta'] = dict(
-            deviation=deviation,
-            evaluations=evaluations
-        )
-
-    @property
-    def pos(self):
-        return self._cur_index
-
-    @property
-    def theta_df(self):
-        df_results = []
-        for name, layer in self._layer_results.items():
-            for i, results in enumerate(layer):
-                if 'theta' not in results:
-                    continue
-                evaluations = {
-                    f'Theta Evaluation {i}':k
-                    for i, k in enumerate(results['theta']['evaluations'])
-                }
-
-                df_results.append({
-                    'Layer': name,
-                    'Step': i,
-                    'Theta Deviation': results['theta']['deviation'],
-                    **evaluations
-                })
-        return pd.DataFrame(df_results)
-
-    @property
-    def input_df(self):
-        df_results = []
-        for name, layer in self._layer_results.items():
-            for i, results in enumerate(layer):
-                if 'inputs' not in results:
-                    continue
-                evaluations = {
-                    f'Input Evaluation {i}':k
-                    for i, k in enumerate(results['inputs']['evaluations'])
-                }
-
-                df_results.append({
-                    'Layer': name,
-                    'Step': i,
-                    'Input Deviation': results['inputs']['deviation'],
-                    **evaluations
-                })
-        return pd.DataFrame(df_results)
-
-
-# need a way to "prepend the LearnF"
-
-
-# if you want to use decision tree
-# probably need to have a mixture of experts
-# randomly choose what expert to update for each 
-# sample... 
-#
-# output = 1 2 1 2 2 2
-# update = 0 0 0 0 0 1 <- some small probability of updating
-# otherwise the changes will be too great
-# 
-
-
 class Transform(Machine):
     """Layer that transforms an input and does inverse transform on targets
     """
 
     def __init__(
-        self, f, inv_f, objective: Objective , recorder: Recorder=None
+        self, f, inv_f, objective: Objective
     ):
         """initializer
 
         Args:
             objective (Objective)
-            recorder (Recorder, optional): Recorder to record the learning progress. Defaults to None.
         """
         self._f = f
         self._inv_f = inv_f
         self._objective = objective
-        self._recorder = recorder
 
     def assess(self, y, t):
         return self._objective(y, t)
@@ -700,75 +447,82 @@ class Transform(Machine):
 
         if update_inputs:
             x_prime = self._inv_f(y)
-            if self._recorder:
-                self._recorder.record_inputs(
-                    id(self), x, x_prime,
-                    # TODO ADD IN EVALUATIONS???
-                    evaluations=[] # to_float(self._input_updater.evaluations)
-                )
             assert x_prime is not None, f'{self._inv_f}'
             return x_prime
 
 
-class TargetTransform(Machine):
-    """Layer that transforms an input and does inverse transform on targets
-    """
+# class TargetTransform(Machine):
+#     """Layer that transforms an input and does inverse transform on targets
+#     """
 
-    def __init__(
-        self, f, inv_f, objective: Objective , recorder: Recorder=None
-    ):
-        """initializer
+#     def __init__(
+#         self, f, inv_f, objective: Objective , recorder: Recorder=None
+#     ):
+#         """initializer
 
-        Args:
-            objective (Objective)
-            recorder (Recorder, optional): Recorder to record the learning progress. Defaults to None.
-        """
-        self._f = f
-        self._inv_f = inv_f
-        self._objective = objective
-        self._recorder = recorder
+#         Args:
+#             objective (Objective)
+#             recorder (Recorder, optional): Recorder to record the learning progress. Defaults to None.
+#         """
+#         self._f = f
+#         self._inv_f = inv_f
+#         self._objective = objective
+#         self._recorder = recorder
 
-    def assess(self, y, t):
-        return self._objective(y, t)
+#     def assess(self, y, t):
+#         return self._objective(y, t)
 
-    def output_ys(self, x):
-        x = x.detach().requires_grad_()
-        x.retain_grad()
-        y = self.forward(x)
-        return y, [x, y]
+#     def output_ys(self, x):
+#         x = x.detach().requires_grad_()
+#         x.retain_grad()
+#         y = self.forward(x)
+#         return y, [x, y]
 
-    def get_y_out(self, outs):
-        return outs[1]
+#     def get_y_out(self, outs):
+#         return outs[1]
 
-    def get_in(self, outs):
-        return outs[0]
+#     def get_in(self, outs):
+#         return outs[0]
 
-    def forward(self, x):
-        return self._f(x)
+#     def forward(self, x):
+#         return self._f(x)
     
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
-        return self.forward(x)
+#     def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+#         return self.forward(x)
 
-    def backward_update(self, x: th.Tensor, t: th.Tensor, outs=None, update_theta: bool=True, update_inputs: bool= True):
-        if outs is not None:
-            y = self.get_y_out(outs)
-            x = self.get_in(outs)
-        else:
-            x = x.detach().requires_grad_()
-            x.retain_grad()
-            y = self._f(x)
+#     def backward_update(self, x: torch.Tensor, t: torch.Tensor, outs=None, update_theta: bool=True, update_inputs: bool= True):
+#         if outs is not None:
+#             y = self.get_y_out(outs)
+#             x = self.get_in(outs)
+#         else:
+#             x = x.detach().requires_grad_()
+#             x.retain_grad()
+#             y = self._f(x)
 
-        if update_inputs:
+#         if update_inputs:
 
-            # need to use the objective
-            y_prime = self._objective.update(y, t)
-            x_prime = self._inv_f(y_prime)
-            if self._recorder:
-                self._recorder.record_inputs(
-                    id(self), x, x_prime,
-                    # TODO ADD IN EVALUATIONS???
-                    evaluations=to_float(self._objective.evaluations)
-                )
-            assert x_prime is not None, f'{self._inv_f}'
-            return x_prime
+#             # need to use the objective
+#             y_prime = self._objective.update(y, t)
+#             x_prime = self._inv_f(y_prime)
+#             if self._recorder:
+#                 self._recorder.record_inputs(
+#                     id(self), x, x_prime,
+#                     # TODO ADD IN EVALUATIONS???
+#                     evaluations=to_float(self._objective.evaluations)
+#                 )
+#             assert x_prime is not None, f'{self._inv_f}'
+#             return x_prime
 
+
+# need a way to "prepend the LearnF"
+
+
+# if you want to use decision tree
+# probably need to have a mixture of experts
+# randomly choose what expert to update for each 
+# sample... 
+#
+# output = 1 2 1 2 2 2
+# update = 0 0 0 0 0 1 <- some small probability of updating
+# otherwise the changes will be too great
+# 
