@@ -139,16 +139,12 @@ class SklearnMachine(Machine):
         #     outs = outs
         return self._objective(y, t)
 
-    # def output_ys(self, x):
-    #     y = self.forward(x)
-    #     return y, [x, y]
-
     def forward(self, x: torch.Tensor, get_ys: bool=False):
         device = x.device
         y_np = self._module.forward(x)
         return y_np.to(device)
 
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+    def forward_update(self, x, t, objective: Objective=None, update_theta: bool=True):
         """forward update on the module. SKLearn Module cannot be updated on Forward update
 
         Args:
@@ -162,14 +158,8 @@ class SklearnMachine(Machine):
         """
         y = self.forward(x)
         return y
-        
-    # def get_y_out(self, outs):
-    #     return outs[1]
-
-    # def get_in(self, outs):
-    #     return outs[0]
     
-    def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool=True):
+    def backward_update(self, x, t, ys=None, update_theta: bool=True, update_inputs: bool=True):
         
         if update_theta and not self._fixed:
             self._theta_updater.step(x, t)
@@ -214,12 +204,6 @@ class BlackboxMachine(Machine):
     def forward_update(self, x, t, objective: Objective=None, update_theta: bool=True):
         y = self.forward(x)
         return y
-
-    # def get_y_out(self, outs):
-    #     return outs[1]
-
-    # def get_in(self, outs):
-    #     return outs[0]
     
     def backward_update(self, x, t, ys=None, update_theta: bool=True, update_inputs: bool= True):
         
@@ -249,20 +233,6 @@ class Sequence(Machine):
         return self.machines[-1].assess(
             y, t
         )
-
-    # def get_y_out(self, outs):
-    #     return self.machines[-1].get_y_out(outs[-1]) 
-
-    # def get_in(self, outs):
-    #     return outs[0]
-
-    # def output_ys(self, x):
-    #     outs = [x]
-    #     y = x
-    #     for machine in self.machines:
-    #         y, outs_i = machine.output_ys(y)
-    #         outs.append(outs_i)
-    #     return y, outs
 
     def forward(self, x: torch.Tensor, get_ys: bool=False):
         y = x
@@ -309,15 +279,7 @@ class CompositeProcessor(Processor):
 
     def __init__(self, processors: typing.List[Processor]):
         self.processors = processors
-
-    # def output_ys(self, x):
-    #     outs = [x]
-    #     y = x
-    #     for processor in self.processors:
-    #         y, outs_i = processor.output_ys(y)
-    #         outs.append(outs_i)
-    #     return y, outs
-
+    
     def forward(self, x: torch.Tensor, get_ys: bool=False):
         y = x
         ys = []
@@ -360,12 +322,6 @@ class Processed(Machine):
     
     def assess(self, y, t):
         return self.machine.assess(y, t)
-    
-    # def output_ys(self, x):
-    #     y, outs_i = self.processors.output_ys(x)
-    #     # y = outs[-1] if outs[-1] is not None else x
-    #     y, outs_j = self.machine.output_ys(y)
-    #     return y, [outs_i, outs_j]
 
     def forward(self, x: torch.Tensor, get_ys: bool=False):
         
@@ -388,9 +344,6 @@ class Processed(Machine):
         t = self.machine.backward_update(y_in, t, outs[1], update_theta, update_inputs)
         if update_inputs:
             return self.processors.backward(x, t, outs[0])
-
-    # def get_y_out(self, outs):
-    #     return self.machine.get_y_out(outs[-1])
 
 
 class WeightedLoss(nn.Module):
@@ -425,18 +378,6 @@ class Transform(Machine):
     def assess(self, y, t):
         return self._objective(y, t)
 
-    # def output_ys(self, x):
-    #     x = x.detach().requires_grad_()
-    #     x.retain_grad()
-    #     y = self.forward(x)
-    #     return y, [x, y]
-
-    # def get_y_out(self, outs):
-    #     return outs[1]
-
-    # def get_in(self, outs):
-    #     return outs[0]
-
     def forward(self, x: torch.Tensor, get_ys: bool=False):
         if get_ys:
             x = x.detach().requires_grad_()
@@ -461,72 +402,6 @@ class Transform(Machine):
             x_prime = self._inv_f(y)
             assert x_prime is not None, f'{self._inv_f}'
             return x_prime
-
-
-# class TargetTransform(Machine):
-#     """Layer that transforms an input and does inverse transform on targets
-#     """
-
-#     def __init__(
-#         self, f, inv_f, objective: Objective , recorder: Recorder=None
-#     ):
-#         """initializer
-
-#         Args:
-#             objective (Objective)
-#             recorder (Recorder, optional): Recorder to record the learning progress. Defaults to None.
-#         """
-#         self._f = f
-#         self._inv_f = inv_f
-#         self._objective = objective
-#         self._recorder = recorder
-
-#     def assess(self, y, t):
-#         return self._objective(y, t)
-
-#     def output_ys(self, x):
-#         x = x.detach().requires_grad_()
-#         x.retain_grad()
-#         y = self.forward(x)
-#         return y, [x, y]
-
-#     def get_y_out(self, outs):
-#         return outs[1]
-
-#     def get_in(self, outs):
-#         return outs[0]
-
-#     def forward(self, x):
-#         return self._f(x)
-    
-#     def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
-#         return self.forward(x)
-
-#     def backward_update(self, x: torch.Tensor, t: torch.Tensor, outs=None, update_theta: bool=True, update_inputs: bool= True):
-#         if outs is not None:
-#             y = self.get_y_out(outs)
-#             x = self.get_in(outs)
-#         else:
-#             x = x.detach().requires_grad_()
-#             x.retain_grad()
-#             y = self._f(x)
-
-#         if update_inputs:
-
-#             # need to use the objective
-#             y_prime = self._objective.update(y, t)
-#             x_prime = self._inv_f(y_prime)
-#             if self._recorder:
-#                 self._recorder.record_inputs(
-#                     id(self), x, x_prime,
-#                     # TODO ADD IN EVALUATIONS???
-#                     evaluations=to_float(self._objective.evaluations)
-#                 )
-#             assert x_prime is not None, f'{self._inv_f}'
-#             return x_prime
-
-
-# need a way to "prepend the LearnF"
 
 
 # if you want to use decision tree

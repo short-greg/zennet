@@ -73,14 +73,6 @@ class Blackbox(nn.Module):
         return self._postprocessor(self._f(self._preprocessor(x)))
 
 
-
-# def score(x: torch.Tensor, t: torch.Tensor, objective: Objective, scorer: Scorer=None):
-
-#     if scorer is not None:
-#         return scorer.assess(x, t)
-#     return objective(x, t)
-
-
 class Perceptron(SklearnModule):
 
     def __init__(self, in_features: int, out_features: int, lr: float=1e-2):
