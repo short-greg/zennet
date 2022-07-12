@@ -4,6 +4,10 @@ from torch.nn.utils import parameters_to_vector, vector_to_parameters
 import torch.nn as nn
 
 
+def batch_flatten(x: torch.Tensor):
+    return x.view(x.size(0), -1)
+
+
 def expand_dim0(x: torch.Tensor, k: int, reshape: bool=True):
     y = x[None].repeat(k, *([1] * len(x.size())))
     if reshape:

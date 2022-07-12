@@ -3,10 +3,7 @@ import typing
 import torch
 import pandas as pd
 import torch.nn as nn
-
-
-def batch_flatten(x):
-    return x.view(x.size(0), -1)
+from .utils import batch_flatten
 
 
 class Assessment:

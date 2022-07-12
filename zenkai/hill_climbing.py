@@ -113,7 +113,6 @@ class GaussianHillClimbSelector(HillClimbSelector):
 
     def __call__(self, cur: torch.Tensor, value: torch.Tensor, assessment: PopulationAssessment) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         best, evaluation = assessment.best()
-        # best, evaluation = get_best(value, evaluation, self.maximize)
         if self._diff is not None and self._momentum is not None:
             self._diff = (1 - self._momentum) * (best - cur) + self._momentum * self._diff
             x_updated = cur + self._diff
