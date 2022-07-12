@@ -1,11 +1,8 @@
 from abc import ABC, abstractmethod, abstractproperty
-from dataclasses import InitVar, dataclass
-from turtle import forward
 import typing
 import torch
 import pandas as pd
 import torch.nn as nn
-from . import utils
 
 
 def batch_flatten(x):
@@ -69,6 +66,13 @@ class ScalarAssessment(Assessment):
         return None, None
 
 
+class ScalarNullAssessment(Assessment):
+
+    def __init__(self, dtype: torch.dtype, device: torch.device, maximize: bool=False):
+        evaluation = torch.tensor(0.0, dtype=dtype, device=device)
+        super().__init__(evaluation, evaluation)
+
+
 class BatchAssessment(Assessment):    
     
     def mean(self):
@@ -121,11 +125,9 @@ class BatchNullAssessment(Assessment):
         return BatchNullAssessment(self.dtype, self.device)
 
 
-class PopulationScalarAssessment(Assessment):
+class PopulationAssessment(Assessment):
     
     def best(self, for_reg: bool=True):
-        if self.is_null:
-            return None, None
 
         if for_reg:
             x = self.regularized
@@ -133,12 +135,22 @@ class PopulationScalarAssessment(Assessment):
             x = self.unregularized
 
         if self.maximize:
-            return torch.max(x, dim=0)
-        return torch.min(x, dim=0)
+            result = torch.max(x, dim=0)
+        else: result = torch.min(x, dim=0)
+        return x[result[1]], result[0] 
+    
+    def append(self, assessment: ScalarAssessment):
+        assessment = assessment.to_maximize(self.maximize)
+        unregularized = assessment.unregularized.unsqueeze(0)
+        regularized = assessment.regularized.unsqueeze(0)
+        
+        return PopulationBatchAssessment(
+            torch.concat([self.unregularized, unregularized], dim=0),
+            torch.concat([self.regularized, regularized], dim=0),
+            self.maximize
+        )
     
     def __getitem__(self, idx: int):
-        if self.is_null:
-            raise RuntimeError('Cannot index when the assessment is null.')
         return ScalarAssessment(
             self.unregularized[idx], self.regularized[idx], self.maximize
         )
@@ -156,7 +168,7 @@ class PopulationScalarAssessment(Assessment):
         unregularized = [a.unregularized for a in assessments]
         regularized = [a.regularized for a in assessments]
         device = unregularized[0].device
-        return PopulationScalarAssessment(
+        return PopulationAssessment(
             torch.tensor(unregularized, device=device),
             torch.tensor(regularized, device=device)
         )
@@ -165,13 +177,13 @@ class PopulationScalarAssessment(Assessment):
 class PopulationBatchAssessment(Assessment):
     
     def mean(self):
-        return PopulationScalarAssessment(
+        return PopulationAssessment(
             batch_flatten(self.unregularized).mean(1),
             batch_flatten(self.regularized).mean(1)
         )
     
     def sum(self):
-        return PopulationScalarAssessment(
+        return PopulationAssessment(
             batch_flatten(self.unregularized).sum(1),
             batch_flatten(self.regularized).sum(1)
         )
@@ -334,6 +346,139 @@ class MachineObjective(Objective):
         return y, BatchNullAssessment(x.dtype, x.device)
 
 
+class ObjectivePair(Objective):
+
+    def __init__(self, first: Objective, second: Objective):
+        self.first = first
+        self.second = second
+    
+    def assess(
+        self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, 
+        batch_assess: bool=True
+    ) -> typing.Union[ScalarAssessment, BatchAssessment]:
+        y, assessment = self.first.extend(
+            x, t, y, batch_assess
+        )
+        return self.second.assess(
+            y, t, batch_assess=batch_assess
+        ) + assessment
+
+    def extend(
+        self, x: torch.Tensor, t: torch.Tensor, 
+        y: torch.Tensor=None, batch_assess: bool=True
+    ) -> (
+        typing.Tuple[torch.Tensor, typing.Union[ScalarAssessment, BatchAssessment]]
+    ):        
+        y, assessment1 = self.first.extend(
+            x, t, y, batch_assess
+        )
+        y, assessment2 = self.second.assess(
+            y, t, batch_assess=batch_assess
+        )
+        return y, assessment1 + assessment2
+
+
+class Result(object):
+
+    def __init__(self, x, get_ys, get_reg):
+
+        self._get_ys = get_ys
+        self._get_reg = get_reg
+        if get_ys:
+            self._ys = [x]
+        else:
+            self._ys = None
+        self._reg = None
+        self._y = x
+    
+    def update(self, output):
+
+        if self._get_ys:
+            self._ys.append(output[1])
+        if self._get_reg and self._get_ys:
+            reg = output[2]
+        elif self._get_reg:
+            reg = output[1]
+        
+        if reg and self._reg:
+            self._reg += reg
+        elif reg:
+            self._reg = reg
+        self._y = output[0]
+
+    @property
+    def y(self):
+        return self._y
+    
+    @property
+    def output(self):
+        if self._get_reg and self._get_ys:
+            return self._y, self._ys, self._reg
+        elif self._get_reg:
+            return self._y, self._reg
+        elif self._get_ys:
+            return self._y, self._ys
+        return self._y
+
+
+class Score(object):
+
+    @abstractproperty
+    def maximize(self) -> bool:
+        pass
+
+    @property
+    def minimize(self) -> bool:
+        return not self.maximize
+
+    @abstractmethod
+    def __call__(self, x: torch.Tensor, t: torch.Tensor):
+        pass
+
+
+class Regularize(object):
+
+    @abstractproperty
+    def maximize(self) -> bool:
+        pass
+
+    @property
+    def minimize(self) -> bool:
+        return not self.maximize
+
+    @abstractmethod
+    def __call__(self, x: torch.Tensor):
+        pass
+
+
+
+class TorchScore(Score):
+
+    def __init__(self, torch_scorer: typing.Type[nn.Module], batch_assess: bool, reduction: str='mean', maximize: bool=False):
+
+        assert reduction == 'mean' or reduction == 'sum'
+        self.torch_loss = torch_scorer(reduction='none')
+        self.batch_assess = batch_assess
+        self.reduction = reduction
+        self._maximize = maximize
+    
+    @property
+    def maximize(self):
+        return self._maximize
+    
+    def __call__(self, x: torch.Tensor, t: torch.Tensor):
+        output = self.torch_loss(x, t)
+        
+        if self.reduction == 'mean' and self.batch_assess:
+            return output.view(x.size(0), -1).mean(1)
+        elif self.reduction == 'mean':
+            return output.mean()
+        elif self.reduction == 'sum' and self.batch_assess:
+            return output.view(x.size(0), -1).sum(1)
+        return output.sum()
+
+
+
 class ThetaOptim(ABC):
 
     @abstractproperty
@@ -352,17 +497,17 @@ class InputOptim(ABC):
         pass
 
 
-class TorchMachine(Machine):
+class ParameterizedMachine(Machine):
     """Machine used for torch-based neural networks
     """
 
     @abstractproperty
     def theta(self):
-        return utils .get_parameters(self._module)
+        pass
     
     @theta.setter
     def theta(self, theta: torch.Tensor):
-        utils.set_parameters(theta, self._module)
+        pass
 
 
 class Processor(ABC):

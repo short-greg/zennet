@@ -5,13 +5,11 @@ from sklearn.svm import SVR
 import torch
 import torch.nn as nn
 import torch as th
-import sklearn
 import sklearn.base
 import numpy as np
 from torch.nn import functional as nn_func
 
-from .base import Scorer, Reduction, Objective, SklearnModule
-
+from .base import SklearnModule
 
 
 class SklearnWrapper(SklearnModule):
@@ -38,7 +36,7 @@ class SklearnWrapper(SklearnModule):
     def partial_fit(self, x: torch.Tensor, t: torch.Tensor):
         return self.module.partial_fit(
             x.detach().cpu().numpy(),
-            t.detach().cpu().numpy()
+            t.detach().cpu().numpy() 
         )
     
     def score(self, x: torch.Tensor, t: torch.Tensor):

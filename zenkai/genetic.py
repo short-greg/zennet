@@ -4,9 +4,8 @@ import torch
 import torch.nn as nn
 
 from zenkai.machinery import TorchNN
-from .modules import Objective
 # from .optimizers import , get_theta, Scorer, update_theta
-from .base import Evaluation, ThetaOptim, get_best
+from .base import Objective, PopulationAssessment, ScalarAssessment, ThetaOptim
 
 
 class Initializer(ABC):
@@ -157,7 +156,7 @@ class MultiProcessor(GeneProcessor):
 class GeneticThetaOptim(ThetaOptim):
 
     def __init__(
-        self, machine: TorchNN, objective: Objective, 
+        self, machine: TorchNN, 
         initializer: Initializer, pair_selector: PairSelector, 
         breeder: Breeder, processors: typing.List[GeneProcessor]=None, 
         elitism: Elitism=None
@@ -166,25 +165,26 @@ class GeneticThetaOptim(ThetaOptim):
         super().__init__()
         self._machine = machine
         self._chromosomes = initializer(machine.theta)
-        self.objective = objective
         self.pair_selector = pair_selector
         self.breeder = breeder
         self.processors = MultiProcessor(processors)
         self.elitism = elitism
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> Evaluation:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> ScalarAssessment:
         chromosome_pairs = self.pair_selector()
         children = self.breeder(chromosome_pairs)
         chromosomes = self.processors(children)
 
         if self.elitism is not None:
             children = self.elitism()
-        evaluations = []
+        assessment = None
         for child in children:
             self._machine.theta = child
-            evaluations.append(objective(x, t))
+            cur_assessment = objective(x, t)
+            if assessment is None: assessment = PopulationAssessment.concat(cur_assessment)
+            else: assessment.append(cur_assessment)
 
-        best, evaluation = get_best(chromosomes, Evaluation.from_list(evaluations), objective.maximize)
+        best, scalar_assessment = assessment.best()
         self._chromosomes = children
         self._machine.theta = best
-        return evaluation
+        return scalar_assessment

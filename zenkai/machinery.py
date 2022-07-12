@@ -1,6 +1,5 @@
 
 
-from abc import ABC, abstractclassmethod, abstractmethod
 from functools import partial, singledispatchmethod
 import typing
 import torch as th
@@ -12,17 +11,16 @@ import torch.nn.utils as nn_utils
 import pandas as pd
 
 from . import utils
-from .objectives import LossObjective, SequenceObjective
 
 from .modules import SklearnModule
 from .optimizers import (
     GradInputOptim, GradThetaOptim, Scorer, GradThetaOptim, GradInputOptim
 )
 from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
-from .base import MachineObjective, Objective, ObjectivePair, Objective_, Processor, Machine, ScalarAssessment, BatchAssessment, TorchMachine
+from .base import MachineObjective, Objective, ObjectivePair, ParameterizedMachine, Processor, Machine, BatchAssessment, Result, Score
 
 
-class TorchNN(TorchMachine):
+class TorchNN(ParameterizedMachine):
     """Layer that wraps a Torch neural network
     """
 
@@ -90,10 +88,10 @@ class TorchNN(TorchMachine):
             y = self._module(x)
 
         if update_theta and not self._fixed:            
-            self._theta_updater.step(x, t, objective=self._theta_objective(x, t), y=y)
+            self._theta_updater.step(x, t, objective=MachineObjective(self), y=y)
         
         if update_inputs:
-            x_prime, _ = self._input_updater.step(x, t, objective=self._input_objective(x, t), y=y)
+            x_prime, _ = self._input_updater.step(x, t, objective=MachineObjective(self), y=y)
             return x_prime
 
     @property
@@ -165,7 +163,7 @@ class SklearnMachine(Machine):
             self._theta_updater.step(x, t)
         
         if update_inputs:
-            x_prime = self._input_updater.step(x, t, objective=self._input_objective(x, t))
+            x_prime = self._input_updater.step(x, t, objective=MachineObjective(self))
     
             return x_prime
 
@@ -174,7 +172,7 @@ class BlackboxMachine(Machine):
     """Layer that wraps a function that does not learn
     """
 
-    def __init__(self, f, objective: Objective, input_updater: InputOptimBuilder):
+    def __init__(self, f, score: Score, input_updater: InputOptimBuilder):
         """initializer
 
         Args:
@@ -184,22 +182,19 @@ class BlackboxMachine(Machine):
         """
         super().__init__()
         self._f = f
-        self._input_updater = input_updater(f, objective)
-        self._objective = objective
+        self._input_updater = input_updater(f)
 
-    def assess(self, x, t, outs=None):
+    def assess(self, x, t, ys=None):
         if y is None:
             y = self.forward(x)
         else:
             outs = outs
         return self._objective(y, t)
 
-    def output_ys(self, x):
-        y = self.forward(x)
-        return y, [x, y]
-
-    def forward(self, x: torch.Tensor, get_ys: bool=False):
-        return self._f(x)
+    def forward(self, x: torch.Tensor, get_ys: bool=False, get_reg: bool=False):
+        result = Result(x, get_ys, get_reg)
+        result.update(self._f(result.y))
+        return result.output
 
     def forward_update(self, x, t, objective: Objective=None, update_theta: bool=True):
         y = self.forward(x)
@@ -208,7 +203,7 @@ class BlackboxMachine(Machine):
     def backward_update(self, x, t, ys=None, update_theta: bool=True, update_inputs: bool= True):
         
         if update_inputs:
-            return self._input_updater.step(x, t, objective=self._input_objective(x, t))
+            return self._input_updater.step(x, t, objective=MachineObjective(self))
 
 
 class Sequence(Machine):
@@ -234,26 +229,26 @@ class Sequence(Machine):
             y, t
         )
 
-    def forward(self, x: torch.Tensor, get_ys: bool=False):
-        y = x
-        ys = []
-        if get_ys:
-            ys.append(x)
+    def forward(self, x: torch.Tensor, get_ys: bool=False, get_reg: bool=False):
+        result = Result(x, get_ys, get_reg)
+
         for layer in self.machines:
-            y = layer.forward(y)
-            if get_ys:
-                ys.append(y)
-        return y
+            result.update(layer.forward(result.y))
+        return result.output
 
     def forward_update(self, x, t, objective: Objective=None, update_theta: bool=True):
-        if not update_theta:
+        if not update_theta or self._fixed:
             y = self.forward(x)
             return y
-
         y = x
         for i, machine in enumerate(self.machines):
-            if i < len(self.machines) - 1:
-                cur_objective = SequenceObjective(self.machines[i + 1:], t, objective)
+            if i < len(self.machines) - 1 and objective is None:
+                
+                cur_objective = MachineObjective(Sequence(self.machines[i + 1:]))
+            elif i < len(self.machines) - 1:
+                # TODO: This will not factor in the regularizations from the sub machines
+                # So need to improve on this
+                cur_objective = ObjectivePair(MachineObjective(Sequence(self.machines[i + 1:])), objective)
             else:
                 cur_objective = objective
             y = machine.forward_update(y, t, cur_objective, update_theta)
