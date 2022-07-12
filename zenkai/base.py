@@ -8,12 +8,14 @@ from .utils import batch_flatten
 
 class Assessment:
 
-    unregularized: typing.Optional[torch.Tensor] = None
+    unregularized: typing.Optional[torch.Tensor]=None
     regularized: typing.Optional[torch.Tensor]=None
     maximize: bool=False
 
-    def __init__(self, unregularized: torch.Tensor, regularized: typing.Optional[torch.Tensor]=None, maximize: bool=False):
-
+    def __init__(
+        self, unregularized: torch.Tensor, 
+        regularized: typing.Optional[torch.Tensor]=None, maximize: bool=False
+    ):
         self.regularized = regularized
         self.unregularized = unregularized
         self.maximize = maximize
@@ -25,13 +27,19 @@ class Assessment:
     def is_null(self):
         return self.unregularized is None
 
-    def to_maximize(self, maximize: bool=False):
+    def to_maximize(self, maximize: bool=True):
         if self.maximize and maximize or (not self.maximize and not maximize):
             return self.__class__(self.unregularized, self.regularized, True)
         return self.__class__(-self.unregularized, -self.regularized, False)
 
+    def to_minimize(self, minimize: bool=True):
+        return self.to_maximize(not minimize)
+
     def __add__(self, other):
-        
+
+        if other is None:
+            return self
+
         other = other.to_maximize(self.maximize)
         return self.__class__(
             self.unregularized + other.unregularized,
@@ -57,7 +65,7 @@ class ScalarAssessment(Assessment):
         elif self.regularized is not None:
             self.regularized.backward()
     
-    def item(self):
+    def item(self) -> typing.Tuple[torch.Tensor, torch.Tensor]:
         if self.unregularized is not None:
             return self.unregularized.item(), self.regularized.item()
         return None, None
@@ -90,13 +98,13 @@ class BatchAssessment(Assessment):
         if isinstance(other, BatchNullAssessment):
             return self
         
-        return super().__add__(self, other)
+        return super().__add__(other)
 
 
 class BatchNullAssessment(Assessment):
 
-    def __init__(self, dtype: torch.dtype, device):
-        super().__init__(None)
+    def __init__(self, dtype: torch.dtype, device, maximize: bool=False):
+        super().__init__(None, maximize=maximize)
         self.dtype = dtype
         self.device = device
     
@@ -141,11 +149,14 @@ class PopulationAssessment(Assessment):
         unregularized = assessment.unregularized.unsqueeze(0)
         regularized = assessment.regularized.unsqueeze(0)
         
-        return PopulationBatchAssessment(
-            torch.concat([self.unregularized, unregularized], dim=0),
-            torch.concat([self.regularized, regularized], dim=0),
+        return PopulationAssessment(
+            torch.cat([self.unregularized, unregularized], dim=0),
+            torch.cat([self.regularized, regularized], dim=0),
             self.maximize
         )
+    
+    def __len__(self) -> int:
+        return len(self.regularized)
     
     def __getitem__(self, idx: int):
         return ScalarAssessment(
@@ -200,8 +211,8 @@ class PopulationBatchAssessment(Assessment):
         unregularized = assessment.unregularized.unsqueeze(0)
         regularized = assessment.regularized.unsqueeze(0)
         return PopulationBatchAssessment(
-            torch.concat([self.unregularized, unregularized], dim=0),
-            torch.concat([self.regularized, regularized], dim=0),
+            torch.cat([self.unregularized, unregularized], dim=0),
+            torch.cat([self.regularized, regularized], dim=0),
             self.maximize
         )
 
@@ -263,21 +274,13 @@ class Recording(object):
 
     def __init__(self):
 
-        self._df = pd.DataFrame([])
+        self._df = pd.DataFrame()
 
     def record_inputs(self, name, data: typing.Dict):
-        self.df.loc[len(self._df)] = {
-            'Recorder': name,
-            'Type': 'Inputs',
-            **data
-        }
+        self._df.loc[len(self._df), ['Recorder', 'Type', *list(data.keys())]] = [name, 'Inputs', *list(data.values())]
 
     def record_theta(self, name, data: typing.Dict):
-        self.df.loc[len(self._df)] = {
-            'Recorder': name,
-            'Type': 'Theta',
-            **data
-        }
+        self._df.loc[len(self._df), ['Recorder', 'Type', *list(data.keys())]] = [name, 'Theta', *list(data.values())]
 
     @property
     def df(self):
@@ -288,9 +291,16 @@ class Machine(ABC):
 
     def __init__(self):
         self._fixed = False
+    
+    @abstractproperty
+    def maximize(self) -> bool:
+        pass
+
+    def minimize(self) -> bool:
+        return not self.maximize
 
     @abstractmethod
-    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None):
+    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
         pass
 
     @abstractmethod
@@ -308,9 +318,9 @@ class Machine(ABC):
     def fix(self, fixed: bool=True):
         self._fixed = fixed
 
-    @abstractmethod
-    def get_y_out(self, outs):
-        pass
+    # @abstractmethod
+    # def get_y_out(self, outs):
+    #     pass
     
     def __call__(self, x):
         return self.forward(x)
@@ -321,12 +331,15 @@ class MachineObjective(Objective):
     def __init__(self, machine: Machine):
         self._machine = machine
     
+    def maximize(self) -> bool:
+        return self._machine.maximize
+
     def assess(
         self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, 
         batch_assess: bool=True
     ) -> typing.Union[ScalarAssessment, BatchAssessment]:
         return self._machine.assess(
-            x, t, y, batch_assess, **self._assess_args
+            x, t, y, batch_assess
         )
 
     def extend(
@@ -349,6 +362,9 @@ class ObjectivePair(Objective):
         self.first = first
         self.second = second
     
+    def maximize(self):
+        return self.second.maximize
+
     def assess(
         self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, 
         batch_assess: bool=True
@@ -372,7 +388,7 @@ class ObjectivePair(Objective):
         y, assessment2 = self.second.assess(
             y, t, batch_assess=batch_assess
         )
-        return y, assessment1 + assessment2
+        return y, assessment2 + assessment1
 
 
 class Result(object):
@@ -388,20 +404,16 @@ class Result(object):
         self._reg = None
         self._y = x
     
-    def update(self, output):
+    def update(self, y, reg=None):
 
         if self._get_ys:
-            self._ys.append(output[1])
-        if self._get_reg and self._get_ys:
-            reg = output[2]
-        elif self._get_reg:
-            reg = output[1]
+            self._ys.append(y)
         
-        if reg and self._reg:
+        if reg is not None and self._reg is not None:
             self._reg += reg
-        elif reg:
+        elif reg is not None:
             self._reg = reg
-        self._y = output[0]
+        self._y = y
 
     @property
     def y(self):
@@ -429,7 +441,7 @@ class Score(object):
         return not self.maximize
 
     @abstractmethod
-    def __call__(self, x: torch.Tensor, t: torch.Tensor):
+    def __call__(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False):
         pass
 
 
@@ -444,18 +456,18 @@ class Regularize(object):
         return not self.maximize
 
     @abstractmethod
-    def __call__(self, x: torch.Tensor):
+    def __call__(self, x: torch.Tensor, reduce: bool=False):
         pass
-
 
 
 class TorchScore(Score):
 
-    def __init__(self, torch_scorer: typing.Type[nn.Module], batch_assess: bool, reduction: str='mean', maximize: bool=False):
-
+    def __init__(
+        self, torch_scorer: typing.Type[nn.Module], 
+        reduction: str='mean', maximize: bool=False
+    ):
         assert reduction == 'mean' or reduction == 'sum'
         self.torch_loss = torch_scorer(reduction='none')
-        self.batch_assess = batch_assess
         self.reduction = reduction
         self._maximize = maximize
     
@@ -463,17 +475,16 @@ class TorchScore(Score):
     def maximize(self):
         return self._maximize
     
-    def __call__(self, x: torch.Tensor, t: torch.Tensor):
+    def __call__(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False):
         output = self.torch_loss(x, t)
         
-        if self.reduction == 'mean' and self.batch_assess:
+        if self.reduction == 'mean' and not reduce:
             return output.view(x.size(0), -1).mean(1)
         elif self.reduction == 'mean':
             return output.mean()
-        elif self.reduction == 'sum' and self.batch_assess:
+        elif self.reduction == 'sum' and not reduce:
             return output.view(x.size(0), -1).sum(1)
         return output.sum()
-
 
 
 class ThetaOptim(ABC):
@@ -552,52 +563,3 @@ class SklearnModule(nn.Module):
     @abstractmethod
     def forward(self, x: torch.Tensor):
         pass
-
-
-class InputRecorder(InputOptim):
-
-    def __init__(self, name: str, optim: InputOptim, recording: Recording=None):
-
-        self._name = name
-        self._optim = optim
-        self._recording = recording or Recording()
-    
-    @abstractmethod
-    def record(self, x: torch.Tensor, x_prime: torch.Tensor, assessment: Assessment):
-        pass
-
-    def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective, y: torch.Tensor=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
-        x_prime, assessment = self._optim.step(
-            x, t, objective, y
-        )
-        self.record(x, x_prime, assessment)
-        return x_prime, assessment
-
-    @property
-    def recording(self):
-        return self._recording
-
-
-class ThetaRecorder(InputOptim):
-
-    def __init__(self, name: str, optim: ThetaOptim, recording: Recording=None):
-
-        self._name = name
-        self._optim = optim
-        self._recording = recording or Recording()
-    
-    @abstractmethod
-    def record(self, theta: torch.Tensor, theta_prime: torch.Tensor, assessment: Assessment):
-        pass
-
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> ScalarAssessment:
-        theta = self._optim.theta
-        x_prime, asessment = self._optim.step(
-            x, t, objective, y
-        )
-        self.record(theta, self._optim.theta, asessment)
-        return x_prime, asessment
-
-    @property
-    def recording(self):
-        return self._recording

@@ -16,8 +16,7 @@ def expand_dim0(x: torch.Tensor, k: int, reshape: bool=True):
 
 
 def freshen(x: torch.Tensor, requires_grad: bool=True):
-
-    x = x.detach().requires_grad(requires_grad)
+    x = x.detach().requires_grad_(requires_grad)
     x.retain_grad()
     return x
 

@@ -3,9 +3,8 @@ import torch
 from torch import nn
 from abc import ABC, abstractmethod
 from .utils import expand_dim0
-from .machinery import TorchNN
-from .base import BatchAssessment, Objective, Evaluation, InputOptim, PopulationAssessment, PopulationBatchAssessment, PopulationScalarAssessment, ScalarAssessment, ThetaOptim, get_best
-
+# from .machinery import TorchNN
+from .base import BatchAssessment, Objective, InputOptim, ParameterizedMachine, PopulationAssessment, PopulationBatchAssessment, ScalarAssessment, ThetaOptim
 
 
 class HillClimbMixin(ABC):
@@ -126,7 +125,7 @@ class GaussianHillClimbSelector(HillClimbSelector):
 
 class HillClimbThetaOptim(ThetaOptim):
 
-    def __init__(self, machine: TorchNN, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
+    def __init__(self, machine: ParameterizedMachine, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
         super().__init__()
         self._machine = machine
         self._perturber = perturber or SimpleHillClimbPerturber()
@@ -161,7 +160,7 @@ class HillClimbInputOptim(InputOptim):
         self._selector = selector or SimpleHillClimbSelector()
         self._assessment = None
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor) -> typing.Tuple[torch.Tensor, Evaluation]:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         x_pool = self._perturber(x, self._assessment)
         y = self._net(x_pool.view(-1, *x_pool.shape[2:]))
         # y = y.view(x_pool.shape[0], x_pool.shape[1], *y.shape[1:])

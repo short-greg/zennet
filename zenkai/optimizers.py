@@ -1,5 +1,4 @@
 from functools import partial
-from re import X
 import typing
 import sklearn
 import torch.nn as nn
@@ -9,7 +8,7 @@ from .modules import SklearnModule
 from torch.nn import utils as nn_utils
 import numpy as np
 from . import utils
-from .base import BatchAssessment, Assessment, BatchNullAssessment, Objective, InputOptim, ScalarAssessment, ScalarNullAssessment, ThetaOptim
+from .base import Assessment, Objective, InputOptim, Recording, ScalarAssessment, ScalarNullAssessment, ThetaOptim
 
 
 class SklearnThetaOptim(ThetaOptim):
@@ -78,7 +77,7 @@ class GradThetaOptim(ThetaOptim):
     def theta(self):
         return utils.get_parameters(self._net)
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor) -> ScalarAssessment:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> ScalarAssessment:
         self.optim.zero_grad()
         assessment = objective.assess(x, t, y, batch_assess=True)
         assessment.regularized.mean().backward()
@@ -126,3 +125,52 @@ class NullThetaOptim(ThetaOptim):
         
         evaluation = objective(x, t, y)
         return evaluation
+
+
+class InputRecorder(InputOptim):
+
+    def __init__(self, name: str, optim: InputOptim, recording: Recording=None):
+
+        self._name = name
+        self._optim = optim
+        self._recording = recording or Recording()
+    
+    @abstractmethod
+    def record(self, x: torch.Tensor, x_prime: torch.Tensor, assessment: Assessment):
+        pass
+
+    def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective, y: torch.Tensor=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+        x_prime, assessment = self._optim.step(
+            x, t, objective, y
+        )
+        self.record(x, x_prime, assessment)
+        return x_prime, assessment
+
+    @property
+    def recording(self):
+        return self._recording
+
+
+class ThetaRecorder(InputOptim):
+
+    def __init__(self, name: str, optim: ThetaOptim, recording: Recording=None):
+
+        self._name = name
+        self._optim = optim
+        self._recording = recording or Recording()
+    
+    @abstractmethod
+    def record(self, theta: torch.Tensor, theta_prime: torch.Tensor, assessment: Assessment):
+        pass
+
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> ScalarAssessment:
+        theta = self._optim.theta
+        x_prime, asessment = self._optim.step(
+            x, t, objective, y
+        )
+        self.record(theta, self._optim.theta, asessment)
+        return x_prime, asessment
+
+    @property
+    def recording(self):
+        return self._recording

@@ -14,10 +14,10 @@ from . import utils
 
 from .modules import SklearnModule
 from .optimizers import (
-    GradInputOptim, GradThetaOptim, Scorer, GradThetaOptim, GradInputOptim
+    GradInputOptim, GradThetaOptim, GradThetaOptim, GradInputOptim
 )
 from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
-from .base import MachineObjective, Objective, ObjectivePair, ParameterizedMachine, Processor, Machine, BatchAssessment, Result, Score
+from .base import MachineObjective, Objective, ObjectivePair, ParameterizedMachine, Processor, Machine, BatchAssessment, Result, Score, TorchScore
 
 
 class TorchNN(ParameterizedMachine):
@@ -25,7 +25,7 @@ class TorchNN(ParameterizedMachine):
     """
 
     def __init__(
-        self, module: nn.Module, loss: nn.Module, 
+        self, module: nn.Module, loss_factory: typing.Type[nn.Module], 
         theta_updater: ThetaOptimBuilder=None, input_updater: InputOptimBuilder=None,
         fixed: bool=False
     ):
@@ -39,7 +39,7 @@ class TorchNN(ParameterizedMachine):
             fixed (bool, optional): Whether theta is fixed or learnable. Defaults to False.
         """
         self._module = module
-        self._loss = loss
+        self._score = TorchScore(loss_factory)
         self._theta_updater =  (
             theta_updater(self)
             if theta_updater is not None else GradThetaOptim (module)
@@ -51,11 +51,13 @@ class TorchNN(ParameterizedMachine):
         self._fixed = fixed
         self._maximize = False
 
-    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None):
+    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
         if y is None:
-            y = self.forward(x)
-        evaluation = self._loss(y, t)
-        return BatchAssessment(evaluation, evaluation, False)
+            y, reg = self.forward(x, get_reg=True)
+        else:
+            reg = None
+        evaluation = self._score(y, t, reduce=not batch_assess)
+        return BatchAssessment(evaluation, evaluation, False) + reg
     
     @property
     def theta(self):
@@ -65,14 +67,16 @@ class TorchNN(ParameterizedMachine):
     def theta(self, theta: torch.Tensor):
         utils.set_parameters(theta, self._module)
 
-    def forward(self, x: torch.Tensor, get_ys: bool=False):
-        return self._module.forward(x)
+    def forward(self, x: torch.Tensor, get_ys: bool=False, get_reg: bool=False):
+        result = Result(x, get_ys, get_reg)
+        result.update(self._module.forward(result.y))
+        return result.output
     
     def forward_update(self, x, t, outer: Objective=None, update_theta: bool=True):
 
         if update_theta and not self._fixed:
-            inner_objective = MachineObjective(self, maximize=False)
-            objective = inner_objective if objective is None else ObjectivePair(inner_objective, outer)
+            inner_objective = MachineObjective(self)
+            objective = inner_objective if outer is None else ObjectivePair(inner_objective, outer)
             self._theta_updater.step(x, t, objective=objective)
  
         y = self.forward(x)
@@ -80,8 +84,8 @@ class TorchNN(ParameterizedMachine):
 
     def backward_update(self, x, t, ys=None, update_theta: bool=True, update_inputs: bool= True) -> torch.Tensor:
         if ys is not None:
-            y = self.get_y_out(ys)
-            x = self.get_in(ys)
+            y = ys[-1]
+            x = ys[0]
         else:
             x = x.detach().requires_grad_()
             x.retain_grad()
@@ -93,6 +97,10 @@ class TorchNN(ParameterizedMachine):
         if update_inputs:
             x_prime, _ = self._input_updater.step(x, t, objective=MachineObjective(self), y=y)
             return x_prime
+
+    @property
+    def maximize(self) -> bool:
+        False
 
     @property
     def module(self):
@@ -129,7 +137,7 @@ class SklearnMachine(Machine):
     def fix(self, fixed: bool=True):
         self._fixed = fixed
 
-    def assess(self, y, t):
+    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
         # # TODO: Check
         # if y is None:
         #     y = self.forward(x)
@@ -184,7 +192,7 @@ class BlackboxMachine(Machine):
         self._f = f
         self._input_updater = input_updater(f)
 
-    def assess(self, x, t, ys=None):
+    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
         if y is None:
             y = self.forward(x)
         else:
@@ -223,7 +231,7 @@ class Sequence(Machine):
             raise ValueError(f'Length of sequence must be greater than 0')
         self.machines = machines
     
-    def assess(self, y, t):
+    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
         
         return self.machines[-1].assess(
             y, t
@@ -315,18 +323,23 @@ class Processed(Machine):
         self.processors = CompositeProcessor(processors)
         self.machine = machine
     
-    def assess(self, y, t):
-        return self.machine.assess(y, t)
+    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
+        y_in = self.processors.forward(x, False)
+        return self.machine.assess(y_in, t, y, batch_assess=batch_assess)
 
-    def forward(self, x: torch.Tensor, get_ys: bool=False):
+    def forward(self, x: torch.Tensor, get_ys: bool=False, get_reg: bool=False):
         
-        y_p = self.processors.forward(x)
-        y = self.machine.forward(y_p)
-        if get_ys:
-            return y, [x, y_p, y]
-        return y
+        result = Result(x, get_ys, get_reg)
+        
+        result.update(self.processors.forward(x))
+        result.update(self.machine.forward(result.y))
+        return result.output
     
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+    @property
+    def maximize(self) -> bool:
+        return self.machine.maximize
+    
+    def forward_update(self, x, t, scorer: Score=None, update_theta: bool=True):
         #  objective=self._input_objective(x, t)
         x = self.processors.forward(x)
         return self.machine.forward_update(x, t, scorer, update_theta)
@@ -370,7 +383,7 @@ class Transform(Machine):
         self._inv_f = inv_f
         self._objective = objective
 
-    def assess(self, y, t):
+    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
         return self._objective(y, t)
 
     def forward(self, x: torch.Tensor, get_ys: bool=False):
@@ -381,7 +394,7 @@ class Transform(Machine):
             return y, [x, y]
         return self._f(x)
     
-    def forward_update(self, x, t, scorer: Scorer=None, update_theta: bool=True):
+    def forward_update(self, x, t, scorer: Score=None, update_theta: bool=True):
         return self.forward(x)
 
     def backward_update(self, x, t, outs=None, update_theta: bool=True, update_inputs: bool= True):
