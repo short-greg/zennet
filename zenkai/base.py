@@ -563,7 +563,7 @@ class InputRecorder(InputOptim):
         self._recording = recording or Recording()
     
     @abstractmethod
-    def record(self, x: torch.Tensor, x_prime: torch.Tensor, evaluation: Assessment):
+    def record(self, x: torch.Tensor, x_prime: torch.Tensor, assessment: Assessment):
         pass
 
     def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective, y: torch.Tensor=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
