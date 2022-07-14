@@ -560,14 +560,3 @@ class SklearnModule(nn.Module):
     @abstractmethod
     def forward(self, x: torch.Tensor):
         pass
-
-
-# class Processor(ABC):
-
-#     @abstractmethod
-#     def forward(self, x, get_ys: bool=False):
-#         pass
-
-#     @abstractmethod
-#     def backward(self, x, t, ys=None):
-#         pass

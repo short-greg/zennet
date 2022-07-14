@@ -1,13 +1,10 @@
 
-
-from functools import partial, singledispatchmethod
 import typing
 import torch as th
 import torch.nn as nn
 from abc import ABC
 import torch
 import numpy as np
-import torch.nn.utils as nn_utils
 import pandas as pd
 
 from . import utils
@@ -17,7 +14,7 @@ from .optimizers import (
     GradInputOptim, GradThetaOptim, GradThetaOptim, GradInputOptim, SklearnThetaOptim
 )
 from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
-from .base import InputOptim, MachineObjective, Objective, ObjectivePair, ParameterizedMachine, Processor, Machine, BatchAssessment, Result, Score, TorchScore
+from .base import MachineObjective, Objective, ObjectivePair, ParameterizedMachine, Machine, BatchAssessment, Result, Score, TorchScore
 
 
 class TorchNN(ParameterizedMachine):
@@ -84,12 +81,11 @@ class TorchNN(ParameterizedMachine):
         
         x = utils.freshen(x)
 
-        # TODO: Decide whether to pass the result into the objective
         if self._update_theta:
-            self._theta_updater.step(x, t, objective=MachineObjective(self))
+            self._theta_updater.step(x, t, objective=MachineObjective(self), result=result)
         
         if update_inputs:
-            x_prime, _ = self._input_updater.step(x, t, objective=MachineObjective(self))
+            x_prime, _ = self._input_updater.step(x, t, objective=MachineObjective(self), result=result)
             return x_prime
 
     @property
@@ -101,120 +97,6 @@ class TorchNN(ParameterizedMachine):
         return self._module
 
 
-class TorchGradNN(ParameterizedMachine):
-    """Layer that wraps a Torch neural network
-    """
-
-    def __init__(
-        self, module: nn.Module, loss_factory: typing.Type[nn.Module], 
-        input_updater: InputOptimBuilder=None, update_theta: bool=False,
-        optim_factory=None
-    ):
-        """initializer
-
-        Args:
-            module (nn.Module): Torch neural network
-            objective (Objective)
-            theta_updater (ThetaOptimBuilder, optional): Optimizer used to update theta. Defaults to None.
-            input_updater (InputOptimBuilder, optional): Optimizer used to update the inputs. Defaults to None.
-            fixed (bool, optional): Whether theta is fixed or learnable. Defaults to False.
-        """
-        super().__init__(update_theta)
-        self._module = module
-        self._score = TorchScore(loss_factory)
-        if optim_factory is None:
-            self._optim = torch.optim.Adam(module.parameters(), lr=1e-2)
-        else:
-            self._optim = optim_factory(module.parameters())
-        if input_updater is not None:
-            self._input_updater: InputOptim = input_updater(self)
-        else: self._input_updater = None 
-        self._update_theta = update_theta
-
-    def update_optim(self, optim_factory):
-        self._optim = optim_factory(self._module.parameters())
-
-    def assess_output(self, y: torch.Tensor, t: torch.Tensor):
-        evaluation = self._score(y, t, reduce=False)
-        return BatchAssessment(evaluation, evaluation, False)
-
-    @property
-    def theta(self):
-        return utils.get_parameters(self._module)
-    
-    @theta.setter
-    def theta(self, theta: torch.Tensor):
-        utils.set_parameters(theta, self._module)
-
-    def forward(self, x: torch.Tensor, full_output: bool=False):
-        x = utils.freshen(x)
-        y = self._module.forward(x)
-        if full_output:
-            return y, Result(x).update(y)
-
-        return y
-    
-    def forward_update(self, x, t, outer: Objective=None):
-        
-        if self._update_theta:
-            y, result = self.forward(x, True)
-            if outer is not None:
-                asseesment = outer.assess(y, t)
-            else:
-                assessment = self.assess_output(y, t)
-            assessment += result.regularization
-            self._optim.zero_grad()
-            asseesment.mean().backward()
-            self._optim.step()
- 
-        return self.forward(x)
-
-    def backward_update(self, x, t, result: Result=None, update_inputs: bool=True) -> torch.Tensor:
-        # if ys is not None:
-        #     y = ys[-1]
-        #     x = ys[0]
-        # else:
-        #     x = x.detach().requires_grad_()
-        #     x.retain_grad()
-        
-        # TODO
-        # add regularize to assess
-        # add optim_grad
-        # change backward_update to use 'result'
-        # check if result contains the regularizations..
-        # if not, then raise an exception
-
-        # pass through 'assess' methods to score and regularize
-        # add the regularizations to the result of assess
-        # backpropagate
-        # actually, it should be possible to turn off regularization
-        # in assess
-        # 
-        # The "Optim" classes will always 'evaluate'
-        # I could set up the grad optim so that it records the previous output
-        # rather than needing to pass in the previous output
-        # like in Luatorch... passing it in introducs a lot more complexity
-        # just for the purpose of the gradients
-        # 
-        # Instead of including this class.... 
-        # improve the interface on these methods
-
-        self._optim.zero_grad()
-        assessment = self.assess(x, t, False)
-        assessment.mean().backward()
-        if self._update_theta:
-            self._optim.step()
-        if update_inputs:
-            x_prime, _ = self._input_updater.step(x, t, MachineObjective(self))
-            return x_prime
-
-    @property
-    def maximize(self) -> bool:
-        False
-
-    @property
-    def module(self):
-        return self._module
 
 
 class SklearnMachine(Machine):
@@ -273,10 +155,10 @@ class SklearnMachine(Machine):
     def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
         
         if self._update_theta:
-            self._theta_updater.step(x, t, MachineObjective(self))
+            self._theta_updater.step(x, t, MachineObjective(self), result=result)
         
         if update_inputs:
-            x_prime, _ = self._input_updater.step(x, t, objective=MachineObjective(self))
+            x_prime, _ = self._input_updater.step(x, t, objective=MachineObjective(self), result=result)
     
             return x_prime
 
@@ -315,7 +197,7 @@ class BlackboxMachine(Machine):
     def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
         
         if update_inputs:
-            return self._input_updater.step(x, t, objective=MachineObjective(self))
+            return self._input_updater.step(x, t, objective=MachineObjective(self), result=result)
 
 
 class Sequence(Machine):
@@ -535,3 +417,113 @@ class WeightedLoss(nn.Module):
 # update = 0 0 0 0 0 1 <- some small probability of updating
 # otherwise the changes will be too great
 # 
+
+
+
+# class TorchGradNN(ParameterizedMachine):
+#     """Layer that wraps a Torch neural network
+#     """
+
+#     def __init__(
+#         self, module: nn.Module, loss_factory: typing.Type[nn.Module], 
+#         theta_updater: ThetaGradOptimBuilder=None,
+#         input_updater: InputOptimBuilder=None, update_theta: bool=False,
+#         update_reps: int=1
+#     ):
+#         """initializer
+
+#         Args:
+#             module (nn.Module): Torch neural network
+#             objective (Objective)
+#             theta_updater (ThetaOptimBuilder, optional): Optimizer used to update theta. Defaults to None.
+#             input_updater (InputOptimBuilder, optional): Optimizer used to update the inputs. Defaults to None.
+#             fixed (bool, optional): Whether theta is fixed or learnable. Defaults to False.
+#         """
+#         super().__init__(update_theta)
+#         self._module = module
+#         self._score = TorchScore(loss_factory)
+#         if optim_factory is None:
+#             self._optim = torch.optim.Adam(module.parameters(), lr=1e-2)
+#         else:
+#             self._optim = optim_factory(module.parameters())
+#         if input_updater is not None:
+#             self._input_updater: InputOptim = input_updater(self)
+#         else: self._input_updater = None 
+#         self._update_theta = update_theta
+#         self._update_reps = update_reps
+
+#     @property
+#     def update_reps(self): return self._update_reps
+
+#     @update_reps.setter
+#     def update_reps(self, reps: int):
+#         assert reps > 0
+#         self._update_reps = reps
+
+#     def update_optim(self, optim_factory):
+#         self._optim = optim_factory(self._module.parameters())
+
+#     def assess_output(self, y: torch.Tensor, t: torch.Tensor):
+#         evaluation = self._score(y, t, reduce=False)
+#         return BatchAssessment(evaluation, evaluation, False)
+
+#     @property
+#     def theta(self):
+#         return utils.get_parameters(self._module)
+    
+#     @theta.setter
+#     def theta(self, theta: torch.Tensor):
+#         utils.set_parameters(theta, self._module)
+
+#     def forward(self, x: torch.Tensor, full_output: bool=False):
+#         x = utils.freshen(x)
+#         y = self._module.forward(x)
+#         if full_output:
+#             return y, Result(x).update(y)
+#         return y
+    
+#     def forward_update(self, x, t, outer: Objective=None):
+#         if self._update_theta:
+#             y, result = self.forward(x, True)
+#             if outer is not None:
+#                 asseesment = outer.assess(y, t)
+#             else:
+#                 assessment = self.assess_output(y, t)
+#             assessment += result.regularization
+#             self._optim.zero_grad()
+#             asseesment.mean().backward()
+#             self._optim.step()
+ 
+#         return self.forward(x)
+
+#     def backward_update(self, x, t, result: Result=None, update_inputs: bool=True) -> torch.Tensor:
+
+#         self._optim.zero_grad()
+#         if result is None:
+#             x = utils.freshen(x)
+#             assessment = self.assess(x, t, True)
+#         else:
+#             assessment = self.assess_output(result.y, t) + result.regularization
+
+#         assessment.mean().backward()
+#         if self._update_theta:
+#             self._optim.step()
+
+#         for _ in range(self._update_reps if self._update_theta else 0):
+#             self._optim.zero_grad()
+#             x = utils.freshen(x)
+#             assessment = self.assess(x, t, True)
+#             assessment.mean().backward()
+#             self._optim.step()
+
+#         if update_inputs:
+#             x_prime, _ = self._input_updater.step(x, t, MachineObjective(self))
+#             return x_prime
+
+#     @property
+#     def maximize(self) -> bool:
+#         False
+
+#     @property
+#     def module(self):
+#         return self._module

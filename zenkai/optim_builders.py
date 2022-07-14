@@ -1,6 +1,6 @@
 from functools import partial
 import torch
-from .optimizers import GradThetaOptim, NRepeatInputOptim, NRepeatThetaOptim, NullThetaOptim, SklearnThetaOptim, ThetaOptim
+from .optimizers import GradInputOptim, GradThetaOptim, NRepeatInputOptim, NRepeatThetaOptim, NullThetaOptim, SklearnThetaOptim, ThetaOptim
 from .hill_climbing import BinaryHillClimbPerturber, GaussianHillClimbPerturber, GaussianHillClimbSelector, HillClimbInputOptim, HillClimbPerturber, HillClimbSelector, HillClimbThetaOptim, SimpleHillClimbPerturber, SimpleHillClimbSelector
 
 
@@ -85,6 +85,11 @@ class SklearnOptimBuilder(object):
         return optim
 
 
+class ThetaGradOptimBuilder(object):
+
+    def __call__(self, net, loss) -> GradThetaOptim:
+        pass
+
 class InputOptimBuilder(object):
 
     def __init__(self):
@@ -99,7 +104,7 @@ class InputOptimBuilder(object):
             optim_cls = torch.optim.Adam
 
         self._optim = partial (
-            GradThetaOptim,
+            GradInputOptim,
             optim=partial(optim_cls, **kwargs)
         )
         return self

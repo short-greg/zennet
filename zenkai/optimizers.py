@@ -7,7 +7,7 @@ import torch
 from torch.nn import utils as nn_utils
 import numpy as np
 from . import utils
-from .base import Assessment, Objective, InputOptim, Recording, ScalarAssessment, ScalarNullAssessment, ThetaOptim
+from .base import Assessment, Objective, InputOptim, Recording, Result, ScalarAssessment, ScalarNullAssessment, ThetaOptim
 
 
 class SklearnThetaOptim(ThetaOptim):
@@ -20,7 +20,7 @@ class SklearnThetaOptim(ThetaOptim):
     def theta(self):
         return self._machine
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> ScalarAssessment:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         if self._partial_fit:
             self._machine.partial_fit(x, t)
         else:
@@ -36,9 +36,10 @@ class NRepeatInputOptim(InputOptim):
         self.optim = optim
         self._n = n
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         for _ in range(self.n):
-            x, evaluation = self.optim.step(x, t, objective)
+            x, evaluation = self.optim.step(x, t, objective, result)
+            result = None
         return x, evaluation
 
 
@@ -53,7 +54,7 @@ class NRepeatThetaOptim(ThetaOptim):
     def theta(self):
         return self.optim.theta
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> ScalarAssessment:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         for _ in range(self.n):
             evaluation = self.optim.step(x, t, objective)
             y = None
@@ -75,9 +76,12 @@ class GradThetaOptim(ThetaOptim):
     def theta(self):
         return utils.get_parameters(self._net)
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> ScalarAssessment:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         self.optim.zero_grad()
-        assessment = objective.assess(x, t)
+        if result is not None:
+            assessment = objective.assess_output(result.y, t) + result.assessment()
+        else:
+            assessment = objective.assess(x, t)
         assessment.regularized.mean().backward()
         self.optim.step()
         return assessment
@@ -105,7 +109,7 @@ class GradInputOptim(InputOptim):
         self.input_updater = input_updater or BasicInputUpdater()
         self.skip_eval = skip_eval
     
-    def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+    def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         if self.skip_eval and x.grad is not None:
             x = self.input_updater(x)
             return x, ScalarNullAssessment(x.dtype, x.device, False)
@@ -119,7 +123,7 @@ class GradInputOptim(InputOptim):
 
 class NullThetaOptim(ThetaOptim):
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> ScalarAssessment:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         
         evaluation = objective(x, t)
         return evaluation
@@ -137,7 +141,7 @@ class InputRecorder(InputOptim):
     def record(self, x: torch.Tensor, x_prime: torch.Tensor, assessment: Assessment):
         pass
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         x_prime, assessment = self._optim.step(
             x, t, objective
         )
@@ -161,7 +165,7 @@ class ThetaRecorder(InputOptim):
     def record(self, theta: torch.Tensor, theta_prime: torch.Tensor, assessment: Assessment):
         pass
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> ScalarAssessment:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         theta = self._optim.theta
         x_prime, asessment = self._optim.step(
             x, t, objective
