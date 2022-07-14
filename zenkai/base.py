@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod, abstractproperty
+from re import S
 import typing
+from numpy import full
 import torch
 import pandas as pd
 import torch.nn as nn
@@ -255,17 +257,15 @@ class Objective(ABC):
 
     @abstractmethod
     def assess(
-        self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, 
-        batch_assess: bool=True
-    ) -> typing.Union[ScalarAssessment, BatchAssessment]:
+        self, x: torch.Tensor, t: torch.Tensor
+    ) -> BatchAssessment:
         pass
 
     @abstractmethod
     def extend(
-        self, x: torch.Tensor, t: torch.Tensor, 
-        y: torch.Tensor=None, batch_assess: bool=True
+        self, x: torch.Tensor, t: torch.Tensor
     ) -> (
-        typing.Tuple[torch.Tensor, typing.Union[ScalarAssessment, BatchAssessment]]
+        typing.Tuple[torch.Tensor, BatchAssessment]
     ):
         pass
 
@@ -287,10 +287,58 @@ class Recording(object):
         return self._df
 
 
+def add_prev(cur, prev=None):
+
+    if cur is not None and prev is not None:
+        return cur + prev
+    if cur is not None:
+        return cur
+    
+    return prev
+
+
+class Result(object):
+
+    def __init__(self, x):
+
+        self.x = x
+
+        self._outputs = []
+        self._reg = None
+        self._y = x
+    
+    def update(self, y, result=None):
+
+        if result:
+            self._outputs.append((y, result))
+            self._reg = add_prev(result._reg, self._reg)
+        else:
+            self._outputs.append((y, None))
+
+        self._y = y
+        return self
+
+    @property
+    def y(self):
+        return self._y
+    
+    @property
+    def regularization(self):
+        return self._reg
+    
+    @property
+    def outputs(self):
+        return self._outputs
+
+
 class Machine(ABC):
 
-    def __init__(self):
-        self._fixed = False
+    def __init__(self, update_theta: bool=True):
+        self._update_theta = update_theta
+
+    def update_theta(self, to_update: bool=True):
+        self._update_theta = to_update
+        return self
     
     @abstractproperty
     def maximize(self) -> bool:
@@ -299,28 +347,31 @@ class Machine(ABC):
     def minimize(self) -> bool:
         return not self.maximize
 
+    def assess(self, x: torch.Tensor, t: torch.Tensor, regularize: bool=False) -> BatchAssessment:
+        
+        if regularize:
+            y, result = self.forward(x, full_output=True)
+            assessment = self.assess_output(y, t)
+            return assessment + result.regularization
+
+        y = self.forward(x)
+        return self.assess_output(y, t)
+
     @abstractmethod
-    def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
+    def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
         pass
 
     @abstractmethod
-    def forward(self, x: torch.Tensor, reg_excitations: bool=False, get_ys: bool=False):
+    def forward(self, x: torch.Tensor, full_output: bool=False):
         pass
 
     @abstractmethod
-    def forward_update(self, x, t, objective: Objective=None, update_theta: bool=True):
+    def forward_update(self, x, t, outer: Objective=None):
         pass
 
     @abstractmethod
-    def backward_update(self, x, t, ys=None, update_theta: bool=True, update_inputs: bool= True) -> torch.Tensor:
+    def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
         pass
-
-    def fix(self, fixed: bool=True):
-        self._fixed = fixed
-
-    # @abstractmethod
-    # def get_y_out(self, outs):
-    #     pass
     
     def __call__(self, x):
         return self.forward(x)
@@ -335,18 +386,16 @@ class MachineObjective(Objective):
         return self._machine.maximize
 
     def assess(
-        self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, 
-        batch_assess: bool=True
-    ) -> typing.Union[ScalarAssessment, BatchAssessment]:
+        self, x: torch.Tensor, t: torch.Tensor
+    ) -> BatchAssessment:
         return self._machine.assess(
-            x, t, y, batch_assess
+            x, t
         )
 
     def extend(
-        self, x: torch.Tensor, t: torch.Tensor, 
-        y: torch.Tensor=None, batch_assess: bool=True
+        self, x: torch.Tensor, t: torch.Tensor
     ) -> (
-        typing.Tuple[torch.Tensor, typing.Union[ScalarAssessment, BatchAssessment]]
+        typing.Tuple[torch.Tensor, BatchAssessment]
     ):
         if y is None:
             y = self._machine.forward(
@@ -366,68 +415,27 @@ class ObjectivePair(Objective):
         return self.second.maximize
 
     def assess(
-        self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, 
-        batch_assess: bool=True
-    ) -> typing.Union[ScalarAssessment, BatchAssessment]:
+        self, x: torch.Tensor, t: torch.Tensor
+    ) -> BatchAssessment:
         y, assessment = self.first.extend(
-            x, t, y, batch_assess
+            x, t
         )
         return self.second.assess(
-            y, t, batch_assess=batch_assess
+            y, t
         ) + assessment
 
     def extend(
-        self, x: torch.Tensor, t: torch.Tensor, 
-        y: torch.Tensor=None, batch_assess: bool=True
+        self, x: torch.Tensor, t: torch.Tensor
     ) -> (
-        typing.Tuple[torch.Tensor, typing.Union[ScalarAssessment, BatchAssessment]]
+        typing.Tuple[torch.Tensor, BatchAssessment]
     ):        
         y, assessment1 = self.first.extend(
-            x, t, y, batch_assess
+            x, t
         )
         y, assessment2 = self.second.assess(
-            y, t, batch_assess=batch_assess
+            y, t
         )
         return y, assessment2 + assessment1
-
-
-class Result(object):
-
-    def __init__(self, x, get_ys, get_reg):
-
-        self._get_ys = get_ys
-        self._get_reg = get_reg
-        if get_ys:
-            self._ys = [x]
-        else:
-            self._ys = None
-        self._reg = None
-        self._y = x
-    
-    def update(self, y, reg=None):
-
-        if self._get_ys:
-            self._ys.append(y)
-        
-        if reg is not None and self._reg is not None:
-            self._reg += reg
-        elif reg is not None:
-            self._reg = reg
-        self._y = y
-
-    @property
-    def y(self):
-        return self._y
-    
-    @property
-    def output(self):
-        if self._get_reg and self._get_ys:
-            return self._y, self._ys, self._reg
-        elif self._get_reg:
-            return self._y, self._reg
-        elif self._get_ys:
-            return self._y, self._ys
-        return self._y
 
 
 class Score(object):
@@ -494,14 +502,14 @@ class ThetaOptim(ABC):
         pass
 
     @abstractmethod
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> ScalarAssessment:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> ScalarAssessment:
         pass
 
 
 class InputOptim(ABC):
 
     @abstractmethod
-    def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective, y: torch.Tensor=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+    def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         pass
 
 
@@ -515,17 +523,6 @@ class ParameterizedMachine(Machine):
     
     @theta.setter
     def theta(self, theta: torch.Tensor):
-        pass
-
-
-class Processor(ABC):
-
-    @abstractmethod
-    def forward(self, x, get_ys: bool=False):
-        pass
-
-    @abstractmethod
-    def backward(self, x, t, ys=None):
         pass
 
 
@@ -563,3 +560,14 @@ class SklearnModule(nn.Module):
     @abstractmethod
     def forward(self, x: torch.Tensor):
         pass
+
+
+# class Processor(ABC):
+
+#     @abstractmethod
+#     def forward(self, x, get_ys: bool=False):
+#         pass
+
+#     @abstractmethod
+#     def backward(self, x, t, ys=None):
+#         pass

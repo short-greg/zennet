@@ -21,7 +21,6 @@ class SklearnWrapper(SklearnModule):
     def fit(self, x: torch.Tensor, t: torch.Tensor):
         if self._fitted:
             self.module = MultiOutputRegressor(SVR())
-        #    self.module = sklearn.base.clone(self.module)
 
         result = self.module.fit(
             x.detach().cpu().numpy(),
@@ -53,20 +52,17 @@ class SklearnWrapper(SklearnModule):
         return torch.from_numpy(self.module.predict(x.detach().cpu().numpy())).type(self.out_dtype)
 
 
-class Blackbox(nn.Module):
+class Lambda(nn.Module):
     """
     Executes any function whether it uses tensors or not 
     """
 
-    def __init__(self, f, preprocessor=None, postprocessor=None):
+    def __init__(self, f):
         super().__init__()
         self._f = f
-        self._preprocessor = preprocessor
-        self._postprocessor = postprocessor
 
-    def forward(self, x):
-
-        return self._postprocessor(self._f(self._preprocessor(x)))
+    def forward(self, *x: torch.Tensor):
+        return self._f(*x)
 
 
 class Perceptron(SklearnModule):

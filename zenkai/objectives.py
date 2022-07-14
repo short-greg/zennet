@@ -34,7 +34,6 @@ class ThetaRegObjective(MachineObjective):
 
     def __init__(self, machine: ParameterizedMachine, regularizer: Regularize):
 
-        # super().__init__(machine)
         self._machine = machine
         self.regularizer = regularizer
     
