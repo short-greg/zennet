@@ -6,6 +6,11 @@ from abc import ABC, abstractmethod
 import torch
 import numpy as np
 
+
+import torch
+import pandas as pd
+
+
 from . import utils
 from .base import (
     Assessment, Objective, InputOptim, Recording, 
@@ -138,9 +143,9 @@ class NullThetaOptim(ThetaOptim):
 
 class InputRecorder(InputOptim):
 
-    def __init__(self, name: str, optim: InputOptim, recording: Recording=None):
+    def __init__(self, optim: InputOptim, recording: Recording=None, name: str=''):
 
-        self._name = name
+        self._name = name or id(self)
         self._optim = optim
         self._recording = recording or Recording()
     
@@ -162,9 +167,9 @@ class InputRecorder(InputOptim):
 
 class ThetaRecorder(InputOptim):
 
-    def __init__(self, name: str, optim: ThetaOptim, recording: Recording=None):
+    def __init__(self, optim: ThetaOptim, recording: Recording=None, name: str=''):
 
-        self._name = name
+        self._name = name or id(self)
         self._optim = optim
         self._recording = recording or Recording()
     
@@ -174,12 +179,40 @@ class ThetaRecorder(InputOptim):
 
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         theta = self._optim.theta
-        x_prime, asessment = self._optim.step(
+        asessment = self._optim.step(
             x, t, objective, result
         )
         self.record(theta, self._optim.theta, asessment)
-        return x_prime, asessment
+        return asessment
 
     @property
     def recording(self):
         return self._recording
+
+
+class EuclidInputRecorder(InputRecorder):
+    
+    def record(self, x: torch.Tensor, x_prime: torch.Tensor, assessment: ScalarAssessment):
+        deviation = torch.sqrt(torch.sum((x - x_prime) ** 2)).item()
+        self._recording.record_inputs(
+            self._name, {
+                'Deviation': deviation,
+                'Regularized Evaluation': assessment.regularized.item(),
+                'Unregularized Evaluation': assessment.unregularized.item()
+            }
+        )
+
+
+class EuclidThetaRecorder(ThetaRecorder):
+    
+    def record(self, theta: torch.Tensor, theta_prime: torch.Tensor, assessment: ScalarAssessment):
+
+        deviation = torch.sqrt(torch.sum((theta - theta_prime) ** 2)).item()
+        self._recording.record_theta(
+            self._name, {
+                'Deviation': deviation,
+                'Regularized Evaluation': assessment.regularized.item(),
+                'Unregularized Evaluation': assessment.unregularized.item()
+            }
+        )
+

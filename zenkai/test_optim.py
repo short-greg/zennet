@@ -6,7 +6,7 @@ import torch.nn as nn
 from . import optim_builders
 from .machinery import SklearnMachine
 
-from .base import SklearnModule, TorchScore
+from .base import Recording, ScalarAssessment, SklearnModule, TorchScore
 
 from .machinery import TorchNN
 from . import modules
@@ -140,3 +140,62 @@ class TestSklearnThetaOptim:
         )
         assessment = optim.step(th.randn(2, 2), th.randn(2), objective)
         assert assessment.maximize is False
+
+
+class TestEuclidThetaRecorder:
+
+    def test_record_correct_value(self):  
+
+        reg = th.tensor(2.0)
+        unreg = th.tensor(1.0)
+        x = th.tensor([2.0, 3.0])
+        y = th.tensor([3.0, 4.0])
+
+        linear = nn.Linear(2, 2)
+        recording = Recording()
+        recorder = optimizers.EuclidThetaRecorder(
+            optimizers.GradThetaOptim(
+            linear, False
+        ), recording)
+        recorder.record(x, y, ScalarAssessment(unreg, reg))
+        assert (recorder.recording.df.iloc[0].Deviation == th.dist(x, y).numpy()).all()
+
+    def test_recorder_updates_when_step_is_called(self):    
+        linear = nn.Linear(2, 2)
+        objective = TorchNN(linear, nn.MSELoss)
+        recording = Recording()
+        optim = optimizers.EuclidThetaRecorder(
+            optimizers.GradThetaOptim(
+            linear, False
+        ), recording)
+        optim.step(th.randn(1, 2), th.randn(1, 2), objective)
+        assert len(recording.df) == 1
+
+class TestEuclidInputRecorder:
+
+    def test_record_correct_value(self):  
+
+        reg = th.tensor(2.0)
+        unreg = th.tensor(1.0)
+        x = th.tensor([2.0, 3.0])
+        y = th.tensor([3.0, 4.0])
+
+        linear = nn.Linear(2, 2)
+        recording = Recording()
+        recorder = optimizers.EuclidInputRecorder(
+            optimizers.GradInputOptim(
+            linear, False
+        ), recording)
+        recorder.record(x, y, ScalarAssessment(unreg, reg))
+        assert (recorder.recording.df.iloc[0].Deviation == th.dist(x, y).numpy()).all()
+
+    def test_recorder_updates_when_step_is_called(self):    
+        linear = nn.Linear(2, 2)
+        objective = TorchNN(linear, nn.MSELoss)
+        recording = Recording()
+        optim = optimizers.EuclidInputRecorder(
+            optimizers.GradInputOptim(
+            linear, False
+        ), recording)
+        optim.step(th.randn(1, 2), th.randn(1, 2), objective)
+        assert len(recording.df) == 1
