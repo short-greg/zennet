@@ -100,7 +100,7 @@ class TestAssessment:
         x1 = torch.rand(2)
         x2 = torch.rand(2)
         assessment = base.PopulationAssessment(x1, x2, True)
-        target = x1[torch.argmax(x1)]
+        target = torch.argmax(x1)
         outcome, value = assessment.best(False)
         assert (target == outcome).all()
 
@@ -108,7 +108,7 @@ class TestAssessment:
         x1 = torch.rand(2)
         x2 = torch.rand(2)
         assessment = base.PopulationAssessment(x1, x2, True)
-        target = x2[torch.argmax(x2)]
+        target = torch.argmax(x2)
         outcome, value = assessment.best(True)
         assert (target == outcome).all()
 
