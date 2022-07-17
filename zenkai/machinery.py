@@ -171,6 +171,10 @@ class SklearnMachine(Machine):
             
         return y
 
+    @property
+    def maximize(self) -> bool:
+        return self._score.maximize
+
     def forward_update(self, x, t, outer: Objective=None):
         """forward update on the module. SKLearn Module cannot be updated on Forward update
 

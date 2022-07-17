@@ -39,6 +39,10 @@ class NRepeatInputOptim(InputOptim):
         assert n > 0, f'Argument n must be greater than 0 not {n}'
         self.optim = optim
         self._n = n
+    
+    @property
+    def n(self):
+        return self._n
 
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         for _ in range(self.n):
