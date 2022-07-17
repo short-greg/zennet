@@ -87,7 +87,7 @@ class GradThetaOptim(ThetaOptim):
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         self.optim.zero_grad()
         if result is not None:
-            assessment = objective.assess_output(result.y, t) + result.assessment.regularized
+            assessment = objective.assess_output(result.y, t) + result.regularization
         else:
             assessment = objective.assess(x, t, True)
         assessment.regularized.mean().backward()

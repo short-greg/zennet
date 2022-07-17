@@ -48,7 +48,7 @@ class TestGradInputOptim:
         x_prime, assessment = optim.step(th.randn(1, 2), th.randn(1, 2), objective)
         assert assessment.maximize is False
         
-    def test_theta_has_changed(self):
+    def test_input_has_changed(self):
         linear = nn.Linear(2, 2)
         objective = TorchNN(linear, nn.MSELoss)
         optim = optimizers.GradInputOptim(
@@ -58,16 +58,33 @@ class TestGradInputOptim:
         x2, _ = optim.step(x1, th.randn(1, 2), objective)
         assert (x1 != x2).any()
         
-    def test_theta_has_changed_with_y(self):
+    def test_input_has_changed_with_y(self):
         linear = nn.Linear(2, 2)
         objective = TorchNN(linear, nn.MSELoss)
         optim = optimizers.GradInputOptim(
             linear
         )
+        x1 = th.randn(1, 2)
+        y, result = objective.forward(x1, full_output=True)
+        x2, _ = optim.step(x1, th.randn(1, 2), objective, result)
+        assert (result.x != x2).any()
+
+    def test_input_has_changed_after_theta_with_y(self):
+        linear = nn.Linear(2, 2)
+
+        x = th.randn(1, 2)
+        objective = TorchNN(linear, nn.MSELoss)
+        optim_theta = optimizers.NRepeatThetaOptim(optimizers.GradThetaOptim(
+            linear
+        ), 2)
         x1 = th.randn(1, 2, requires_grad=True)
         x1.retain_grad()
-        
         y, result = objective.forward(x1, full_output=True)
+        optim_theta.step(x, th.randn(1, 2), objective, result)
+
+        optim = optimizers.GradInputOptim(
+            linear, skip_eval=True
+        )
         x2, _ = optim.step(x1, th.randn(1, 2), objective, result)
         assert (x1 != x2).any()
 
