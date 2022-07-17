@@ -243,6 +243,14 @@ class BlackboxMachine(Machine):
         if update_inputs:
             return self._input_updater.step(x, t, self, result=result)
 
+    @property
+    def differentiable(self) -> bool:
+        return False
+
+    @property
+    def maximize(self) -> bool:
+        return self._score.maximize
+
 
 class Sequence(Machine):
     """Wraps multiple layers that execut in succession
