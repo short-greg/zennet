@@ -29,6 +29,11 @@ class OuterPair(Objective):
         self._first = first
         self._second = second
 
+    def differentiable(self) -> bool:
+        if self._second:
+            return self._first.differentiable and self._second.differentiable
+        return self._first.differentiable
+
     def assess_output(self, y: torch.Tensor, t: torch.Tensor):
         if self._second is None:
             return self._first.assess_output(y, t)
@@ -59,7 +64,7 @@ class TorchNN(ParameterizedMachine):
     def __init__(
         self, module: nn.Module, loss_factory: typing.Type[nn.Module], 
         theta_updater: ThetaOptimBuilder=None, input_updater: InputOptimBuilder=None,
-        update_theta: bool=True
+        update_theta: bool=True, differentiable: bool=True
     ):
         """initializer
 
@@ -82,6 +87,10 @@ class TorchNN(ParameterizedMachine):
             if input_updater is not None else GradInputOptim(module, skip_eval=True)
         )
         self._maximize = False
+        self._differentiable = differentiable
+
+    def differentiable(self) -> bool:
+        return self._differentiable
 
     def assess_output(self, y: torch.Tensor, t: torch.Tensor):
         evaluation = self._score(y, t, reduce=False)
@@ -152,6 +161,9 @@ class SklearnMachine(Machine):
         self._partial = partial
         self._fit = False
         self._score = scorer
+
+    def differentiable(self) -> bool:
+        return False
 
     def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
         evaluation = self._score(y, t, reduce=False)
@@ -254,6 +266,11 @@ class Sequence(Machine):
         return self.machines[-1].assess_output(
             y, t
         )
+
+    def differentiable(self) -> bool:
+        for machine in self.machines:
+            if not machine.differentiable: return False
+        return True
 
     def forward(self, x: torch.Tensor, full_output: bool=False):
         result = Result(x, self.maximize)

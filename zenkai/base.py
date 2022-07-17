@@ -385,6 +385,10 @@ class Recording(object):
 class Objective(ABC):
 
     @abstractproperty
+    def differentiable(self) -> bool:
+        pass
+
+    @abstractproperty
     def maximize(self) -> bool:
         pass
 
@@ -553,60 +557,3 @@ class SklearnModule(nn.Module):
     @abstractmethod
     def forward(self, x: torch.Tensor):
         pass
-
-
-# class MachineObjective(Objective):
-
-#     def __init__(self, machine: Machine):
-#         self._machine = machine
-    
-#     def maximize(self) -> bool:
-#         return self._machine.maximize
-
-#     def assess_output(
-#         self, y: torch.Tensor, t: torch.Tensor
-#     ) -> BatchAssessment:
-#         return self._machine.assess_output(
-#             y, t
-#         )
-
-#     def forward(
-#         self, x: torch.Tensor, full_output: bool=False
-#     ) -> (
-#         typing.Tuple[torch.Tensor, BatchAssessment]
-#     ):
-#         if full_output:
-#             return self._machine.forward(
-#                 x, full_output=True
-#             )
-#         return self._machine.forward(x)
-
-
-# class ObjectivePair(Objective):
-
-#     def __init__(self, first: Objective, second: Objective):
-#         self.first = first
-#         self.second = second
-    
-#     def maximize(self):
-#         return self.second.maximize
-
-#     def assess_output(
-#         self, y: torch.Tensor, t: torch.Tensor
-#     ) -> BatchAssessment:
-#         return self.second.assess_output(
-#             y, t
-#         )
-
-#     def forward(
-#         self, x: torch.Tensor, full_output: bool=False
-#     ) -> (
-#         typing.Tuple[torch.Tensor, BatchAssessment]
-#     ):
-#         if full_output:
-#             y, result1 = self.first.forward(x, True)
-#             y, result2 = self.second.forward(x, True)
-#             return y, result1.regularization + result2.regularization
-
-#         y = self.first.forward(x)
-#         return self.second.forward(y)
