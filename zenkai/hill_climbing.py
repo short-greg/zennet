@@ -4,7 +4,7 @@ from torch import nn
 from abc import ABC, abstractmethod
 from .utils import expand_dim0
 # from .machinery import TorchNN
-from .base import BatchAssessment, Objective, InputOptim, ParameterizedMachine, PopulationAssessment, PopulationBatchAssessment, Result, ScalarAssessment, ThetaOptim
+from .base import Objective, InputOptim, ParameterizedMachine, PopulationAssessment, PopulationBatchAssessment, Result, ScalarAssessment, ThetaOptim
 
 
 class HillClimbMixin(ABC):

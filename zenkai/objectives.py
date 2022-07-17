@@ -1,13 +1,7 @@
-from abc import abstractmethod, abstractproperty
 import typing
-
-from numpy import full
-from .base import BatchAssessment, MachineObjective, Objective, Machine, ParameterizedMachine, Regularize, ScalarAssessment, Score, TorchScore
+from .base import BatchAssessment, Objective, ParameterizedMachine, ScalarAssessment
 import torch
-import torch.nn as nn
-
-
-from zenkai.base import Objective
+from .base import Objective
 
 
 class ObjectiveDecorator(Objective):

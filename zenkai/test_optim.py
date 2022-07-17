@@ -171,6 +171,7 @@ class TestEuclidThetaRecorder:
         optim.step(th.randn(1, 2), th.randn(1, 2), objective)
         assert len(recording.df) == 1
 
+
 class TestEuclidInputRecorder:
 
     def test_record_correct_value(self):  

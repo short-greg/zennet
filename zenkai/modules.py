@@ -3,10 +3,6 @@ from sklearn.multioutput import MultiOutputRegressor
 from sklearn.svm import SVR
 import torch
 import torch.nn as nn
-import torch as th
-import numpy as np
-from torch.nn import functional as nn_func
-
 from .base import SklearnModule
 
 
