@@ -44,13 +44,13 @@ class ThetaOptimBuilder(object):
         self.n_repetitions = n_repetitions
         return self
 
-    def __call__(self, net, loss) -> ThetaOptim:
+    def __call__(self, net) -> ThetaOptim:
         if self.is_null:
-            return NullThetaOptim(net, loss)
+            return NullThetaOptim(net)
         if self.n_repetitions > 1:
-            return NRepeatThetaOptim(self._optim(net, loss), self.n_repetitions)
+            return NRepeatThetaOptim(self._optim(net), self.n_repetitions)
         else:
-            return self._optim(net, loss)
+            return self._optim(net)
 
 
 class SklearnOptimBuilder(object):
@@ -76,19 +76,14 @@ class SklearnOptimBuilder(object):
         self.n_repetitions = n_repetitions
         return self
 
-    def __call__(self, net, objective) -> SklearnThetaOptim:
+    def __call__(self, net) -> SklearnThetaOptim:
         if self.is_null:
-            return NullThetaOptim(net, objective)
-        optim = SklearnThetaOptim(net, objective, self.is_partial)
+            return NullThetaOptim(net)
+        optim = SklearnThetaOptim(net, self.is_partial)
         if self.n_repetitions > 1:
             return NRepeatThetaOptim(optim, self.n_repetitions)
         return optim
 
-
-class ThetaGradOptimBuilder(object):
-
-    def __call__(self, net, loss) -> GradThetaOptim:
-        pass
 
 class InputOptimBuilder(object):
 
@@ -138,8 +133,8 @@ class InputOptimBuilder(object):
         self.n_repetitions = n_repetitions
         return self
 
-    def __call__(self, net, loss) -> ThetaOptim:
-        optim = self._optim(net, loss)
+    def __call__(self, net) -> ThetaOptim:
+        optim = self._optim(net)
         if self.n_repetitions > 1:
             return NRepeatInputOptim(optim, self.n_repetitions)
         return optim

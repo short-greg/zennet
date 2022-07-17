@@ -4,27 +4,31 @@ import sklearn
 import torch.nn as nn
 from abc import ABC, abstractmethod
 import torch
-from torch.nn import utils as nn_utils
 import numpy as np
+
 from . import utils
-from .base import Assessment, Objective, InputOptim, Recording, Result, ScalarAssessment, ScalarNullAssessment, ThetaOptim
+from .base import (
+    Assessment, Objective, InputOptim, Recording, 
+    Result, ScalarAssessment, ScalarNullAssessment, SklearnModule, 
+    ThetaOptim
+)
 
 
 class SklearnThetaOptim(ThetaOptim):
 
-    def __init__(self, sklearn_machine, partial_fit: bool=False):
+    def __init__(self, module: SklearnModule, partial_fit: bool=False):
         self._partial_fit = partial_fit
-        self._machine = sklearn_machine
+        self._module = module
     
     @property
     def theta(self):
-        return self._machine
+        return self._module
 
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         if self._partial_fit:
-            self._machine.partial_fit(x, t)
+            self._module.partial_fit(x, t)
         else:
-            self._machine.fit(x, t)
+            self._module.fit(x, t)
         return objective.assess(x, t, True)
 
 
@@ -56,8 +60,8 @@ class NRepeatThetaOptim(ThetaOptim):
 
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         for _ in range(self.n):
-            evaluation = self.optim.step(x, t, objective)
-            y = None
+            evaluation = self.optim.step(x, t, objective, result)
+            result = None
         return evaluation
 
 
@@ -79,9 +83,9 @@ class GradThetaOptim(ThetaOptim):
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         self.optim.zero_grad()
         if result is not None:
-            assessment = objective.assess_output(result.y, t) + result.assessment()
+            assessment = objective.assess_output(result.y, t) + result.assessment.regularized
         else:
-            assessment = objective.assess(x, t)
+            assessment = objective.assess(x, t, True)
         assessment.regularized.mean().backward()
         self.optim.step()
         return assessment
@@ -97,6 +101,7 @@ class InputUpdater(ABC):
 class BasicInputUpdater(ABC):
     
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        assert x.grad is not None, 'Cannot update input unless backpropagated and grad retained on x'
         return x - x.grad 
 
 
@@ -104,29 +109,27 @@ class GradInputOptim(InputOptim):
 
     def __init__(self, maximize: bool=False, input_updater: InputUpdater=None, skip_eval: bool=False):
         super().__init__()
-        # self._net = net
         self.maximize = maximize
         self.input_updater = input_updater or BasicInputUpdater()
         self.skip_eval = skip_eval
     
-    def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         if self.skip_eval and x.grad is not None:
             x = self.input_updater(x)
             return x, ScalarNullAssessment(x.dtype, x.device, False)
         
-        x = utils.freshen(x)
-        assessment = objective.assess(x, t)
+        y, result = objective.forward(x, True)
+        assessment = objective.assess_output(y, t) + result.regularization
         assessment.regularized.mean().backward()
-        x = self.input_updater(x) 
-        return x, assessment
+        x_prime = self.input_updater(result.x) 
+        return x_prime, assessment
 
 
 class NullThetaOptim(ThetaOptim):
 
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         
-        evaluation = objective(x, t)
-        return evaluation
+        return objective.assess_output(result.y, t)
 
 
 class InputRecorder(InputOptim):
@@ -143,7 +146,7 @@ class InputRecorder(InputOptim):
 
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         x_prime, assessment = self._optim.step(
-            x, t, objective
+            x, t, objective, result
         )
         self.record(x, x_prime, assessment)
         return x_prime, assessment
@@ -168,7 +171,7 @@ class ThetaRecorder(InputOptim):
     def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         theta = self._optim.theta
         x_prime, asessment = self._optim.step(
-            x, t, objective
+            x, t, objective, result
         )
         self.record(theta, self._optim.theta, asessment)
         return x_prime, asessment

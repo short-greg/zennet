@@ -88,6 +88,14 @@ class BatchAssessment(Assessment):
             self.unregularized.mean(),
             self.regularized.mean()
         )
+
+    @property
+    def shape(self) -> int:
+        return self.unregularized.shape
+
+    @property
+    def batch_size(self) -> int:
+        return self.regularized.shape[0]
     
     def sum(self):
         return ScalarAssessment(
@@ -120,6 +128,14 @@ class BatchNullAssessment(Assessment):
             torch.tensor(0.0, dtype=self.dtype, device=self.device)
         )
 
+    @property
+    def shape(self) -> int:
+        return torch.Size([0])
+
+    @property
+    def batch_size(self) -> int:
+        return 0
+
     def __add__(self, other):
 
         if isinstance(other, BatchAssessment):
@@ -134,7 +150,7 @@ class BatchNullAssessment(Assessment):
 
 class PopulationAssessment(Assessment):
     
-    def best(self, for_reg: bool=True):
+    def best(self, for_reg: bool=True) -> typing.Tuple[torch.LongTensor, torch.FloatTensor]:
 
         if for_reg:
             x = self.regularized
@@ -144,7 +160,7 @@ class PopulationAssessment(Assessment):
         if self.maximize:
             result = torch.max(x, dim=0)
         else: result = torch.min(x, dim=0)
-        return x[result[1]], result[0] 
+        return result[1], result[0] 
     
     def append(self, assessment: ScalarAssessment):
         assessment = assessment.to_maximize(self.maximize)
@@ -159,6 +175,10 @@ class PopulationAssessment(Assessment):
     
     def __len__(self) -> int:
         return len(self.regularized)
+
+    @property
+    def shape(self) -> int:
+        return self.unregularized.shape
     
     def __getitem__(self, idx: int):
         return ScalarAssessment(
@@ -175,8 +195,8 @@ class PopulationAssessment(Assessment):
     @classmethod
     def concat(cls, *assessments: ScalarAssessment):
         assert len(assessments) > 0, f"Number of assessments must be greater than 0."
-        unregularized = [a.unregularized for a in assessments]
-        regularized = [a.regularized for a in assessments]
+        unregularized = [a.unregularized.unsqueeze(0) for a in assessments]
+        regularized = [a.regularized.unsqueeze(0) for a in assessments]
         device = unregularized[0].device
         return PopulationAssessment(
             torch.tensor(unregularized, device=device),
@@ -206,6 +226,18 @@ class PopulationBatchAssessment(Assessment):
             self.regularized.view(new_size),
             self.maximize
         )
+
+    @property
+    def batch_size(self) -> int:
+        return self.unregularized.shape[1]
+
+    @property
+    def population_size(self) -> int:
+        return self.unregularized.shape[0]
+
+    @property
+    def shape(self) -> int:
+        return self.unregularized.shape
 
     def append(self, assessment: BatchAssessment):
 
@@ -238,7 +270,7 @@ class PopulationBatchAssessment(Assessment):
         if population_size <= 0:
             raise RuntimeError(f"Size of population must be greater than 0 not {population_size}")
         
-        new_size = torch.Size([population_size, assessment.batch_size // population_size, *assessment.regularized.size[1:]])
+        new_size = torch.Size([population_size, assessment.batch_size // population_size, *assessment.shape[1:]])
         return PopulationBatchAssessment(
             assessment.unregularized.view(new_size),
             assessment.regularized.view(new_size),
@@ -246,28 +278,93 @@ class PopulationBatchAssessment(Assessment):
         )
 
 
-class Objective(ABC):
+def add_prev(cur, prev=None):
+
+    if cur is not None and prev is not None:
+        return cur + prev
+    if cur is not None:
+        return cur
     
-    def minimize(self) -> bool:
-        return not self.maximize
+    return prev
 
-    @abstractproperty
-    def maximize(self) -> bool:
-        raise NotImplementedError
+Result = typing.TypeVar('Result')
 
-    @abstractmethod
-    def assess(
-        self, x: torch.Tensor, t: torch.Tensor
-    ) -> BatchAssessment:
-        pass
+class Result(object):
 
-    @abstractmethod
-    def extend(
-        self, x: torch.Tensor, t: torch.Tensor
-    ) -> (
-        typing.Tuple[torch.Tensor, BatchAssessment]
-    ):
-        pass
+    def __init__(self, x: torch.Tensor, maximize: bool):
+
+        self.x = x
+
+        self._outputs = []
+        self._reg = BatchNullAssessment(x.dtype, x.device, maximize)
+        self._y = x
+
+    def update(self, y, result: Result=None):
+
+        if result:
+            self._outputs.append((y, result))
+            self._reg = add_prev(result._reg, self._reg)
+        else:
+            self._outputs.append((y, None))
+
+        self._y = y
+        return self
+    
+    def __getitem__(self, idx: int) -> typing.Tuple[torch.Tensor, typing.Union[Result, None]]:
+        return self._outputs[idx][0], self._outputs[idx][1]
+
+    @property
+    def y(self):
+        return self._y
+    
+    # TODO: Depracate
+    @property
+    def regularization(self):
+        return self._reg
+
+    def add_reg(self, reg: BatchAssessment):
+        self._reg += reg
+
+    @property
+    def reg(self):
+        return self._reg
+
+    @property
+    def outputs(self):
+        return self._outputs
+
+
+# class Objective(ABC):
+    
+#     def minimize(self) -> bool:
+#         return not self.maximize
+
+#     @abstractproperty
+#     def maximize(self) -> bool:
+#         raise NotImplementedError
+
+#     def assess(
+#         self, x: torch.Tensor, t: torch.Tensor, full_output: bool=False
+#     ) -> typing.Union[BatchAssessment, typing.Tuple[BatchAssessment, Result]]:
+#         y, result = self.extend(x, t)
+#         assessment = self.assess_output(y, t) + result
+#         if full_output:
+#             return assessment, result
+#         return assessment
+
+#     @abstractmethod
+#     def assess_output(
+#         self, y: torch.Tensor, t: torch.Tensor
+#     ) -> BatchAssessment:
+#         pass
+
+#     @abstractmethod
+#     def forward(
+#         self, x: torch.Tensor, full_output: bool=False
+#     ) -> (
+#         typing.Tuple[torch.Tensor, Result]
+#     ):
+#         pass
 
 
 class Recording(object):
@@ -287,59 +384,8 @@ class Recording(object):
         return self._df
 
 
-def add_prev(cur, prev=None):
+class Objective(ABC):
 
-    if cur is not None and prev is not None:
-        return cur + prev
-    if cur is not None:
-        return cur
-    
-    return prev
-
-
-class Result(object):
-
-    def __init__(self, x):
-
-        self.x = x
-
-        self._outputs = []
-        self._reg = None
-        self._y = x
-    
-    def update(self, y, result=None):
-
-        if result:
-            self._outputs.append((y, result))
-            self._reg = add_prev(result._reg, self._reg)
-        else:
-            self._outputs.append((y, None))
-
-        self._y = y
-        return self
-
-    @property
-    def y(self):
-        return self._y
-    
-    @property
-    def regularization(self):
-        return self._reg
-    
-    @property
-    def outputs(self):
-        return self._outputs
-
-
-class Machine(ABC):
-
-    def __init__(self, update_theta: bool=True):
-        self._update_theta = update_theta
-
-    def update_theta(self, to_update: bool=True):
-        self._update_theta = to_update
-        return self
-    
     @abstractproperty
     def maximize(self) -> bool:
         pass
@@ -347,7 +393,7 @@ class Machine(ABC):
     def minimize(self) -> bool:
         return not self.maximize
 
-    def assess(self, x: torch.Tensor, t: torch.Tensor, regularize: bool=False) -> BatchAssessment:
+    def assess(self, x: torch.Tensor, t: torch.Tensor, regularize: bool=True) -> BatchAssessment:
         
         if regularize:
             y, result = self.forward(x, full_output=True)
@@ -362,8 +408,18 @@ class Machine(ABC):
         pass
 
     @abstractmethod
-    def forward(self, x: torch.Tensor, full_output: bool=False):
+    def forward(self, x: torch.Tensor, full_output: bool=False) -> typing.Union[torch.Tensor, typing.Tuple[torch.Tensor, Result]]:
         pass
+
+
+class Machine(Objective):
+
+    def __init__(self, update_theta: bool=True):
+        self._update_theta = update_theta
+
+    def update_theta(self, to_update: bool=True):
+        self._update_theta = to_update
+        return self
 
     @abstractmethod
     def forward_update(self, x, t, outer: Objective=None):
@@ -375,67 +431,6 @@ class Machine(ABC):
     
     def __call__(self, x):
         return self.forward(x)
-
-
-class MachineObjective(Objective):
-
-    def __init__(self, machine: Machine):
-        self._machine = machine
-    
-    def maximize(self) -> bool:
-        return self._machine.maximize
-
-    def assess(
-        self, x: torch.Tensor, t: torch.Tensor
-    ) -> BatchAssessment:
-        return self._machine.assess(
-            x, t
-        )
-
-    def extend(
-        self, x: torch.Tensor, t: torch.Tensor
-    ) -> (
-        typing.Tuple[torch.Tensor, BatchAssessment]
-    ):
-        if y is None:
-            y = self._machine.forward(
-                x
-            )
-            
-        return y, BatchNullAssessment(x.dtype, x.device)
-
-
-class ObjectivePair(Objective):
-
-    def __init__(self, first: Objective, second: Objective):
-        self.first = first
-        self.second = second
-    
-    def maximize(self):
-        return self.second.maximize
-
-    def assess(
-        self, x: torch.Tensor, t: torch.Tensor
-    ) -> BatchAssessment:
-        y, assessment = self.first.extend(
-            x, t
-        )
-        return self.second.assess(
-            y, t
-        ) + assessment
-
-    def extend(
-        self, x: torch.Tensor, t: torch.Tensor
-    ) -> (
-        typing.Tuple[torch.Tensor, BatchAssessment]
-    ):        
-        y, assessment1 = self.first.extend(
-            x, t
-        )
-        y, assessment2 = self.second.assess(
-            y, t
-        )
-        return y, assessment2 + assessment1
 
 
 class Score(object):
@@ -509,7 +504,7 @@ class ThetaOptim(ABC):
 class InputOptim(ABC):
 
     @abstractmethod
-    def step(self, x: torch.Tensor, t: torch.Tensor,objective: Objective) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         pass
 
 
@@ -560,3 +555,60 @@ class SklearnModule(nn.Module):
     @abstractmethod
     def forward(self, x: torch.Tensor):
         pass
+
+
+# class MachineObjective(Objective):
+
+#     def __init__(self, machine: Machine):
+#         self._machine = machine
+    
+#     def maximize(self) -> bool:
+#         return self._machine.maximize
+
+#     def assess_output(
+#         self, y: torch.Tensor, t: torch.Tensor
+#     ) -> BatchAssessment:
+#         return self._machine.assess_output(
+#             y, t
+#         )
+
+#     def forward(
+#         self, x: torch.Tensor, full_output: bool=False
+#     ) -> (
+#         typing.Tuple[torch.Tensor, BatchAssessment]
+#     ):
+#         if full_output:
+#             return self._machine.forward(
+#                 x, full_output=True
+#             )
+#         return self._machine.forward(x)
+
+
+# class ObjectivePair(Objective):
+
+#     def __init__(self, first: Objective, second: Objective):
+#         self.first = first
+#         self.second = second
+    
+#     def maximize(self):
+#         return self.second.maximize
+
+#     def assess_output(
+#         self, y: torch.Tensor, t: torch.Tensor
+#     ) -> BatchAssessment:
+#         return self.second.assess_output(
+#             y, t
+#         )
+
+#     def forward(
+#         self, x: torch.Tensor, full_output: bool=False
+#     ) -> (
+#         typing.Tuple[torch.Tensor, BatchAssessment]
+#     ):
+#         if full_output:
+#             y, result1 = self.first.forward(x, True)
+#             y, result2 = self.second.forward(x, True)
+#             return y, result1.regularization + result2.regularization
+
+#         y = self.first.forward(x)
+#         return self.second.forward(y)

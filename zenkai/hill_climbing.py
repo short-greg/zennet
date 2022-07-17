@@ -4,7 +4,7 @@ from torch import nn
 from abc import ABC, abstractmethod
 from .utils import expand_dim0
 # from .machinery import TorchNN
-from .base import BatchAssessment, Objective, InputOptim, ParameterizedMachine, PopulationAssessment, PopulationBatchAssessment, ScalarAssessment, ThetaOptim
+from .base import BatchAssessment, Objective, InputOptim, ParameterizedMachine, PopulationAssessment, PopulationBatchAssessment, Result, ScalarAssessment, ThetaOptim
 
 
 class HillClimbMixin(ABC):
@@ -86,7 +86,7 @@ class BinaryHillClimbPerturber(HillClimbPerturber):
 class HillClimbSelector(ABC):
 
     @abstractmethod
-    def __call__(self, cur: torch.Tensor, value: torch.Tensor, assessment: PopulationAssessment) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+    def __call__(self, cur: torch.Tensor, thetas: torch.Tensor, assessment: PopulationAssessment) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         pass
 
 
@@ -95,9 +95,11 @@ class SimpleHillClimbSelector(HillClimbSelector):
     def __init__(self, maximize: bool=False):
         self.maximize = maximize
     
-    def __call__(self, cur: torch.Tensor, value: torch.Tensor, assessment: PopulationAssessment) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
-        return assessment.best()
+    def __call__(self, cur: torch.Tensor, thetas: torch.Tensor, assessment: PopulationAssessment) -> typing.Tuple[torch.FloatTensor, torch.LongTensor]:
+        idx, evaluation = assessment.best()
 
+        return thetas[idx], evaluation
+        
 
 class GaussianHillClimbSelector(HillClimbSelector):
 
@@ -110,8 +112,9 @@ class GaussianHillClimbSelector(HillClimbSelector):
         self._step_evaluations = {}
         self._keep_s = True
 
-    def __call__(self, cur: torch.Tensor, value: torch.Tensor, assessment: PopulationAssessment) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
-        best, evaluation = assessment.best()
+    def __call__(self, cur: torch.Tensor, thetas: torch.Tensor, assessment: PopulationAssessment) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+        idx, evaluation = assessment.best()
+        best = thetas[idx]
         if self._diff is not None and self._momentum is not None:
             self._diff = (1 - self._momentum) * (best - cur) + self._momentum * self._diff
             x_updated = cur + self._diff
@@ -130,25 +133,30 @@ class HillClimbThetaOptim(ThetaOptim):
         self._machine = machine
         self._perturber = perturber or SimpleHillClimbPerturber()
         self._selector = selector or SimpleHillClimbSelector()
+        self._evaluation = None
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor=None) -> BatchAssessment:
+    @property
+    def theta(self):
+        return self._machine.theta
+
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
         assert t is not None
 
+        assessment = None
         theta_base = self._machine.theta
-        theta = self._perturber(theta_base, self._assessments)
+        theta = self._perturber(theta_base, self._evaluation)
         for theta_i in theta:
             self._machine.theta = theta_i
             cur_assessment = objective.assess(x, t).mean()
             if assessment is None:
                 assessment = PopulationAssessment.concat(cur_assessment)
             else:
-                assessment.append(assessment)
+                assessment = assessment.append(cur_assessment)
 
-        theta_best, best_assessment =  self._selector(theta_base, theta, assessment)
-        
+        theta_best, evaluation =  self._selector(theta_base, theta, assessment)
         self._machine.theta = theta_best
-        self._assessment = assessment
-        return best_assessment
+        self._evaluation = evaluation
+        return evaluation
 
 
 class HillClimbInputOptim(InputOptim):
@@ -160,15 +168,15 @@ class HillClimbInputOptim(InputOptim):
         self._selector = selector or SimpleHillClimbSelector()
         self._assessment = None
 
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, y: torch.Tensor) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
         x_pool = self._perturber(x, self._assessment)
-        y = self._net(x_pool.view(-1, *x_pool.shape[2:]))
-        # y = y.view(x_pool.shape[0], x_pool.shape[1], *y.shape[1:])
-        # y = y.transpose(1, 0)
-        
-        assessment = objective.assess(y, expand_dim0(t, x_pool.shape[0]), True)
-        assessment = PopulationBatchAssessment.from_batch(assessment, x_pool.shape[0]).mean()
+        t_pool =  expand_dim0(t, x_pool.shape[0])
+        x_pool_shape = x_pool.shape
+        population_size = x_pool.shape[0]
+        x_pool = x_pool.view(x_pool.shape[0] * x_pool.shape[1], *x_pool.shape[2:])
+        assessment = objective.assess(x_pool, t_pool, True)
+        assessment = PopulationBatchAssessment.from_batch(assessment, population_size).mean()
 
         return self._selector(
-            x, x_pool, assessment
+            x, x_pool.view(x_pool_shape), assessment
         )

@@ -1,54 +1,73 @@
 from abc import abstractmethod, abstractproperty
 import typing
+
+from numpy import full
 from .base import BatchAssessment, MachineObjective, Objective, Machine, ParameterizedMachine, Regularize, ScalarAssessment, Score, TorchScore
 import torch
 import torch.nn as nn
 
 
-class InputRegObjective(MachineObjective):
+from zenkai.base import Objective
+
+
+class ObjectiveDecorator(Objective):
+
+    def __init__(self, objective: Objective):
+        
+        self._objective = objective
+
+    @property
+    def maximize(self) -> bool:
+        return self._objective.maximize
     
-    def __init__(self, machine: Machine, init_x: torch.Tensor, score: TorchScore):
-
-        super().__init__(machine)
-        self.score = score
-        self.init_x = init_x
-
-    def assess(
-        self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, 
-        batch_assess: bool=True
+    def assess_output(
+        self, y: torch.Tensor, t: torch.Tensor
     ) -> typing.Union[ScalarAssessment, BatchAssessment]:
-        assessment = super().assess(x, t, y, batch_assess)
-        return self.score(x, self.init_x) + assessment
+        return self._objective.assess_output(y, t)
 
-    def extend(
-        self, x: torch.Tensor, t: torch.Tensor, 
-        y: torch.Tensor=None, batch_assess: bool=True
+    def forward(
+        self, x: torch.Tensor, full_output: bool=False
     ) -> (
         typing.Tuple[torch.Tensor, typing.Union[ScalarAssessment, BatchAssessment]]
     ):
-        y, assessment = super().assess(x, t, y, batch_assess)
-        return y, self.score(x, self.init_x) + assessment
+        return self._objective.forward(x, full_output)
 
 
-class ThetaRegObjective(MachineObjective):
-
-    def __init__(self, machine: ParameterizedMachine, regularizer: Regularize):
-
-        self._machine = machine
-        self.regularizer = regularizer
+class IRObjective(ObjectiveDecorator):
     
-    def assess(
-        self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, 
-        batch_assess: bool=True
-    ) -> typing.Union[ScalarAssessment, BatchAssessment]:
-        assessment = super().assess(x, t, y, batch_assess)
-        return self.regularizer(self._machine.theta) + assessment
+    def __init__(self, objective: Objective, init_x: torch.Tensor, input_reg):
 
-    def extend(
-        self, x: torch.Tensor, t: torch.Tensor, 
-        y: torch.Tensor=None, batch_assess: bool=True
+        super().__init__(objective)
+        self._init_x = init_x
+        self.input_reg = input_reg
+
+    def forward(
+        self, x: torch.Tensor, full_output: bool=False
     ) -> (
         typing.Tuple[torch.Tensor, typing.Union[ScalarAssessment, BatchAssessment]]
     ):
-        y, assessment = super().assess(x, t, y, batch_assess)
-        return y, self.regularizer(self._machine.theta) + assessment
+        if full_output:
+            y, assessment = super().forward(x, True)
+            return y, assessment + self._input_reg(self._init_x, x)
+
+        return super().forward(x, False)
+
+
+class TRObjective(ObjectiveDecorator):
+    
+    def __init__(self, objective: ParameterizedMachine, theta_reg):
+        super().__init__(objective)
+        self._objective: ParameterizedMachine = objective
+        self._theta_reg = theta_reg
+
+    def forward(
+        self, x: torch.Tensor, full_output: bool=False
+    ) -> (
+        typing.Tuple[torch.Tensor, typing.Union[ScalarAssessment, BatchAssessment]]
+    ):
+        if full_output:
+            y, assessment = super().forward(x, True)
+            return y, assessment + self._theta_reg(self._objective.theta)
+
+        return super().forward(x, False)
+    
