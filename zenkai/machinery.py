@@ -329,59 +329,35 @@ class Sequence(Machine):
         return self.machines[0].maximize
 
 
-class WeightedLoss(nn.Module):
+class TargetTransform(Machine):
+    """Layer that transforms an input and does inverse transform on targets
+    """
+
+    def __init__(
+        self, loss_reverse, lr: float=1e-2
+    ):
+        """initializer
+
+        Args:
+            objective (Objective)
+        """
+        super().__init__(False)
+        self._lr = lr
+        self._loss_reverse = loss_reverse
+        self._score = TorchScore(self._loss_reverse.loss)
+
+    def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
+        return self._loss_reverse.score(y, t)
+
+    def forward(self, x: torch.Tensor, full_output: bool=False):
+        if full_output:
+            return x, Result(x, self.maximize)
+        return x
     
-    def __init__(self, nn_loss: nn.Module, weight: float):
+    def forward_update(self, x, t, outer: Objective=None):
+        return x
 
-        super().__init__()
-        self.nn_loss = nn_loss
-        self.weight = weight
+    def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
 
-    def forward(self, x, t):
-
-        return self.weight * self.nn_loss(x, t)
-
-
-# class Transform(Machine):
-#     """Layer that transforms an input and does inverse transform on targets
-#     """
-
-#     def __init__(
-#         self, f, inv_f, objective: Objective,
-#     ):
-#         """initializer
-
-#         Args:
-#             objective (Objective)
-#         """
-#         self._f = f
-#         self._inv_f = inv_f
-#         self._objective = objective
-
-#     def assess(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor=None, batch_assess: bool=True):
-#         return self._objective(y, t)
-
-#     def forward(self, x: torch.Tensor, get_ys: bool=False):
-#         if get_ys:
-#             x = x.detach().requires_grad_()
-#             x.retain_grad()
-#             y = self.forward(x)
-#             return y, [x, y]
-#         return self._f(x)
-    
-#     def forward_update(self, x, t, scorer: Score=None):
-#         return self.forward(x)
-
-#     def backward_update(self, x, t, outs=None, update_inputs: bool= True):
-#         if outs is not None:
-#             y = self.get_y_out(outs)
-#             x = self.get_in(outs)
-#         else:
-#             x = x.detach().requires_grad_()
-#             x.retain_grad()
-#             y = self._f(x)
-
-#         if update_inputs:
-#             x_prime = self._inv_f(y)
-#             assert x_prime is not None, f'{self._inv_f}'
-#             return x_prime
+        if update_inputs:
+            return self._loss_reverse.reverse(x, t, self._lr)

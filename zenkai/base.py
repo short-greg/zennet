@@ -444,10 +444,74 @@ class Score(object):
     @property
     def minimize(self) -> bool:
         return not self.maximize
+    
+    @abstractmethod
+    def score(self, x: torch.Tensor, t: torch.Tensor, reduce: bool= False) -> typing.Union[ScalarAssessment, BatchAssessment]:
+        pass
+
+    def __call__(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False) -> typing.Union[ScalarAssessment, BatchAssessment]:
+        return self.score(x, t, reduce)
+
+
+class LossReverse(Score):
+
+    def __init__(self, loss: typing.Type[nn.Module]):
+        self._loss = loss(reduction='none')
+        self._score = TorchScore(loss)
+
+    def maximize(self) -> bool:
+        return False
 
     @abstractmethod
-    def __call__(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False):
+    def reverse(self, x: torch.Tensor, t: torch.Tensor, lr: float=1e-2) -> torch.Tensor:
         pass
+
+    def score(self, x: torch.Tensor, t: torch.Tensor, reduce: bool= False) -> typing.Union[ScalarAssessment, BatchAssessment]:
+        return self._score(x, t, reduce)
+
+
+class MSELossReverse(LossReverse):
+
+    def __init__(self):
+        super().__init__(nn.MSELoss)
+    
+    def reverse(self, x: torch.Tensor, t: torch.Tensor, lr: float=1e-2) -> torch.Tensor:
+        # if x - t == positive, dx = negative. vice versa
+        return x + torch.sqrt(lr * self._loss(x, t)) * -torch.sign(x - t)
+
+import scipy.optimize as sciopt
+
+class GeneralLossReverse(LossReverse):
+
+    def __init__(self, loss: typing.Type[nn.Module]):
+        super().__init__(loss)
+
+    def reverse(self, x: torch.Tensor, t: torch.Tensor, lr: float=1e-2) -> torch.Tensor:
+        # if x - t == positive, dx = negative. vice versa
+        # 1) convert to numpy
+        # 2) 
+
+        # set up bounds
+        # if x > t.. make t a lowerbound and x an upper bound
+        # otherwise vice versa
+        # ensure that 0 <= lr <= 1
+        # use nelder mead
+        # maxiter = 5
+
+        # This is the basics of how it should work... Need to test
+
+        t = t.detach().cpu()
+
+        def objective(pt):
+            return self._score.score(torch.tensor(pt), t).detach().cpu().numpy()
+
+        lb = torch.min(x, t).detach().cpu().numpy()
+        ub = torch.max(x, t).detach().cpu().numpy()
+        
+        bounds = sciopt.Bounds(lb, ub)
+        x_prime = sciopt.minimize(objective, x.detach().cpu().numpy(), method='Powell', bounds=bounds)
+        
+        return torch.tensor(x_prime, dtype=x.dtype, device=x.device)
 
 
 class Regularize(object):
@@ -460,8 +524,11 @@ class Regularize(object):
     def minimize(self) -> bool:
         return not self.maximize
 
-    @abstractmethod
     def __call__(self, x: torch.Tensor, reduce: bool=False):
+        return self.score(x, reduce)
+
+    @abstractmethod
+    def score(self, x: torch.Tensor, reduce: bool=False):
         pass
 
 
@@ -480,7 +547,7 @@ class TorchScore(Score):
     def maximize(self):
         return self._maximize
     
-    def __call__(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False):
+    def score(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False):
         output = self.torch_loss(x, t)
         
         if self.reduction == 'mean' and not reduce:
