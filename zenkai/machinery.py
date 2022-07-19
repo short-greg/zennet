@@ -5,10 +5,15 @@ import torch.nn as nn
 from . import utils
 from .modules import SklearnModule
 from .optimizers import (
-    GradInputOptim, GradThetaOptim, GradThetaOptim, GradInputOptim, SklearnThetaOptim
+    GradInputOptim, GradThetaOptim, GradThetaOptim, GradInputOptim
 )
-from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
-from .base import Objective, ParameterizedMachine, Machine, BatchAssessment, Result, Score, TorchScore
+# from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
+from .base import (
+    Objective, ParameterizedMachine, Machine, 
+    BatchAssessment, Result, Score, SklearnThetaOptim, TorchScore,
+    ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder,
+    
+)
 
 
 class OuterPair(Objective):    
@@ -88,6 +93,12 @@ class TorchNN(ParameterizedMachine):
         )
         self._maximize = False
         self._differentiable = differentiable
+    
+    def input_objective(self, x: torch.Tensor, t: torch.Tensor):
+        return self
+
+    def theta_objective(self, x: torch.Tensor, t: torch.Tensor):
+        return self
 
     def differentiable(self) -> bool:
         return self._differentiable
@@ -113,7 +124,7 @@ class TorchNN(ParameterizedMachine):
     
     def forward_update(self, x, t, outer: Objective=None):
         if self._update_theta:
-            self._theta_updater.step(x, t, OuterPair(self, outer))
+            self._theta_updater.step(x, t, OuterPair(self.theta_objective(x, t), outer))
  
         y = self.forward(x)
         return y
@@ -121,10 +132,10 @@ class TorchNN(ParameterizedMachine):
     def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
 
         if self._update_theta:
-            self._theta_updater.step(x, t, self, result=result)
+            self._theta_updater.step(x, t, self.theta_objective(x, t), result=result)
         
         if update_inputs:
-            x_prime, _ = self._input_updater.step(x, t, self, result=result)
+            x_prime, _ = self._input_updater.step(x, t, self.input_objective(x, t), result=result)
             return x_prime
 
     @property

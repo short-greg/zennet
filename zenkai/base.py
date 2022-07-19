@@ -5,6 +5,8 @@ import pandas as pd
 import torch.nn as nn
 from .utils import batch_flatten
 
+import scipy.optimize as sciopt
+
 
 class Assessment:
 
@@ -479,12 +481,14 @@ class MSELossReverse(LossReverse):
         # if x - t == positive, dx = negative. vice versa
         return x + torch.sqrt(lr * self._loss(x, t)) * -torch.sign(x - t)
 
-import scipy.optimize as sciopt
 
 class GeneralLossReverse(LossReverse):
 
-    def __init__(self, loss: typing.Type[nn.Module]):
+    def __init__(self, loss: typing.Type[nn.Module], maxiter: int=20):
         super().__init__(loss)
+
+        # TODO: Use this
+        self._maxiter = maxiter
 
     def reverse(self, x: torch.Tensor, t: torch.Tensor, lr: float=1e-2) -> torch.Tensor:
         # if x - t == positive, dx = negative. vice versa
@@ -496,22 +500,39 @@ class GeneralLossReverse(LossReverse):
         # otherwise vice versa
         # ensure that 0 <= lr <= 1
         # use nelder mead
-        # maxiter = 5
+        # maxiter = 5pip in
 
         # This is the basics of how it should work... Need to test
 
+        shape = x.shape
+        x = x.flatten()
+        t = t.flatten()
         t = t.detach().cpu()
 
+        target_loss = (1 - lr) * self._loss(x, t)
+
         def objective(pt):
-            return self._score.score(torch.tensor(pt), t).detach().cpu().numpy()
+            # print('Shapes: ',  pt.shape,t.shape )
+            result = ((target_loss - self._loss(torch.tensor(pt), t)) ** 2)
+            print(result)
+            return result.mean().item()
+            
+            # may need to compute the jacobian
+            # pt = torch.tensor(pt)
+            # pt = freshen(pt)
+            # self._loss(pt, t).mean().backward()
+            # grad = pt.grad.detach().cpu().numpy()
+            # print(grad)
+            # return grad
 
         lb = torch.min(x, t).detach().cpu().numpy()
         ub = torch.max(x, t).detach().cpu().numpy()
         
-        bounds = sciopt.Bounds(lb, ub)
-        x_prime = sciopt.minimize(objective, x.detach().cpu().numpy(), method='Powell', bounds=bounds)
+        bounds = sciopt.Bounds(lb, ub) 
+        # find out how to set the maximium number of iterations
+        x_prime = sciopt.minimize(objective, x.detach().cpu().numpy(), method='Powell', bounds=bounds).x
         
-        return torch.tensor(x_prime, dtype=x.dtype, device=x.device)
+        return torch.tensor(x_prime, dtype=x.dtype, device=x.device).view(shape)
 
 
 class Regularize(object):
@@ -623,4 +644,43 @@ class SklearnModule(nn.Module):
     
     @abstractmethod
     def forward(self, x: torch.Tensor):
+        pass
+
+
+class ThetaOptimBuilder(ABC):
+
+    @abstractmethod
+    def __call__(self, net) -> ThetaOptim:
+        pass
+
+
+class InputOptimBuilder(ABC):
+
+    @abstractmethod
+    def __call__(self, net) -> InputOptim:
+        pass
+
+
+class SklearnThetaOptim(ThetaOptim):
+
+    def __init__(self, module: SklearnModule, partial_fit: bool=False):
+        self._partial_fit = partial_fit
+        self._module = module
+    
+    @property
+    def theta(self):
+        return self._module
+
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
+        if self._partial_fit:
+            self._module.partial_fit(x, t)
+        else:
+            self._module.fit(x, t)
+        return objective.assess(x, t, True)
+
+
+class SklearnOptimBuilder(ABC):
+
+    @abstractmethod
+    def __call__(self, net) -> SklearnThetaOptim:
         pass

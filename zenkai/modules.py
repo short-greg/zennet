@@ -1,9 +1,11 @@
+from abc import abstractmethod
 import math
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.svm import SVR
 import torch
 import torch.nn as nn
 from .base import SklearnModule
+import torch.nn.functional as nn_func
 
 
 class SklearnWrapper(SklearnModule):
@@ -93,3 +95,36 @@ class Perceptron(SklearnModule):
     def forward(self, x: torch.Tensor):
         
         return ((x @ self._weight + self._bias) >= 0).float()
+
+
+class Invertable(nn.Module):
+
+    @abstractmethod
+    def invert(self, y) -> torch.Tensor:
+        pass
+
+
+class SigmoidInv(Invertable):
+
+    def inverse(self, y: torch.Tensor):
+        # x = ln(y/(1-y))
+        return torch.log(
+            y / (1 - y)
+        )
+
+    def forward(self, x: torch.Tensor):
+        return nn_func.sigmoid(x)
+
+
+class LReLUInv(Invertable):
+
+    def __init__(self, negative_slope: float=None):
+        super().__init__()
+        self._negative_slope = negative_slope
+
+    def inverse(self, y: torch.Tensor):
+        return nn_func.leaky_relu(y, 1 / self._negative_slope)
+
+    def forward(self, x: torch.Tensor):
+        # forward = max(0,x)+negative_slope∗min(0,x)
+        return nn_func.leaky_relu(x, self._negative_slope)

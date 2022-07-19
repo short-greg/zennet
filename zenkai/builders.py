@@ -1,10 +1,14 @@
 from functools import partial
+from . import machinery
+from typing import TypeVar
 import torch
+
+from .base import Score, ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
 from .optimizers import GradInputOptim, GradThetaOptim, NRepeatInputOptim, NRepeatThetaOptim, NullThetaOptim, SklearnThetaOptim, ThetaOptim
-from .hill_climbing import BinaryHillClimbPerturber, GaussianHillClimbPerturber, GaussianHillClimbSelector, HillClimbInputOptim, HillClimbPerturber, HillClimbSelector, HillClimbThetaOptim, SimpleHillClimbPerturber, SimpleHillClimbSelector
+from .hill_climbing import BinaryHillClimbPerturber, GaussianHillClimbPerturber, GaussianHillClimbSelector, HillClimbInputOptim, HillClimbThetaOptim, SimpleHillClimbPerturber, SimpleHillClimbSelector
 
 
-class ThetaOptimBuilder(object):
+class ThetaOptimBuilderStd(ThetaOptimBuilder):
 
     def __init__(self):
         
@@ -53,7 +57,7 @@ class ThetaOptimBuilder(object):
             return self._optim(net)
 
 
-class SklearnOptimBuilder(object):
+class SklearnOptimBuilderStd(SklearnOptimBuilder):
 
     def __init__(self):
         
@@ -85,7 +89,7 @@ class SklearnOptimBuilder(object):
         return optim
 
 
-class InputOptimBuilder(object):
+class InputOptimBuilderStd(InputOptimBuilder):
 
     def __init__(self):
         
@@ -139,4 +143,27 @@ class InputOptimBuilder(object):
             return NRepeatInputOptim(optim, self.n_repetitions)
         return optim
 
+
+MachineBuilder = TypeVar("MachineBuilder")
+
+class MachineBuilder(object):
+
+    def __init__(self):
+
+        self.input_optim = InputOptimBuilderStd()
+        self.theta_optim = ThetaOptimBuilderStd()
+        self.sklearn_optim = SklearnOptimBuilderStd()
+
+    def torch(self, module, loss_factory, update_theta: bool=True, differentiable: bool=True):
+        
+        return machinery.TorchNN(
+            module, loss_factory, self._theta_optim_builder, self._input_optim_builder, 
+            update_theta, differentiable, 
+        )
+
+    def sklearn(self, module, scorer: Score):
+        return machinery.SklearnMachine(module, scorer, self._sklearn_optim, self._input_optim)
+
+    def blackbox(self, f, scorer: Score):
+        return machinery.BlackboxMachine(f, scorer, self._input_optim)
 

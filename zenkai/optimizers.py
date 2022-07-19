@@ -2,30 +2,16 @@ import typing
 import torch.nn as nn
 from abc import ABC, abstractmethod
 import torch
+
+from .modules import Invertable
 from . import utils
 from .base import (
     Assessment, Objective, InputOptim, Recording, 
     Result, ScalarAssessment, ScalarNullAssessment, SklearnModule, 
     ThetaOptim
 )
-
-
-class SklearnThetaOptim(ThetaOptim):
-
-    def __init__(self, module: SklearnModule, partial_fit: bool=False):
-        self._partial_fit = partial_fit
-        self._module = module
-    
-    @property
-    def theta(self):
-        return self._module
-
-    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> ScalarAssessment:
-        if self._partial_fit:
-            self._module.partial_fit(x, t)
-        else:
-            self._module.fit(x, t)
-        return objective.assess(x, t, True)
+import numpy as np
+import scipy.optimize
 
 
 class NRepeatInputOptim(InputOptim):
@@ -207,3 +193,82 @@ class EuclidThetaRecorder(ThetaRecorder):
             }
         )
 
+
+class LeastSquaresThetaOptimizer(ThetaOptim):
+
+    def __init__(self, linear: nn.Linear, act_inverse: Invertable):
+
+        self._linear = linear
+        self._act_inverse = act_inverse
+    
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+
+        t_prime = self._act_inverse.forward(t)
+        result = torch.linalg.lstsq(x, t_prime)
+        self._linear.weight = nn.Parameter(
+            result.solution[0].unsqueeze(1)
+        )
+        self._linear.bias = nn.Parameter(
+            result.solution[1]
+        )
+        if result:
+            return objective.assess_output(result.y, t) + result.reg
+
+        return objective.assess(x, t)
+
+
+class LeastSquaresInputOptimizer(InputOptim):
+
+    def __init__(self, linear: nn.Linear, act_inverse: Invertable):
+
+        self._linear = linear
+        self._act_inverse = act_inverse
+    
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+        """
+        """
+
+        t_prime = self._act_inverse.forward(t)
+
+        # remove the bias before prediction
+        t_prime -= self._linear.bias.unsqueeze(0)
+        x_prime = torch.linalg.lstsq(
+            self._linear.weight.T, t_prime.T
+        ).solution.T
+        if result:
+            assessment = objective.assess_output(result.y, t) + result.reg
+        else:
+            assessment = objective.assess(x, t) 
+        return x_prime, assessment
+
+
+class LeastSquaresBoundedInputOptimizer(InputOptim):
+    """Optimizer to bind . Use if the incoming value is from a sigmoid
+    """
+
+    def __init__(self, linear: nn.Linear, act_inverse: Invertable, bounds=(-torch.inf, torch.inf), max_iter: int=5):
+
+        self._linear = linear
+        self._act_inverse = act_inverse
+        self._bounds = bounds
+        self._max_iter = max_iter
+    
+    def step(self, x: torch.Tensor, t: torch.Tensor, objective: Objective, result: Result=None) -> typing.Tuple[torch.Tensor, ScalarAssessment]:
+        """
+        """
+
+        t_prime = self._act_inverse.forward(t)
+
+        # remove the bias before prediction
+        t_prime -= self._linear.bias.unsqueeze(0)
+        A = self._linear.weight.T.detach().cpu().numpy()
+        b = t_prime.T.detach().cpu().numpy()
+
+        x_prime = scipy.optimize.lsq_linear(
+            A, b, bounds=(self._bounds), max_iter=self._max_iter
+        ).x.T
+        if result:
+            assessment = objective.assess_output(result.y, t) + result.reg
+        else:
+            assessment = objective.assess(x, t) 
+        return x_prime, assessment
