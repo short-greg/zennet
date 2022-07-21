@@ -342,26 +342,9 @@ class TargetTransform(Machine):
     """Layer that transforms an input and does inverse transform on targets
     """
 
-    def __init__(
-        self, loss_reverse: ScoreReverse, lr: float=1e-2
-    ):
-        """initializer"""
-        super().__init__(False)
-        self._lr = lr
-        self._loss_reverse = loss_reverse
-
     @property
     def differentiable(self) -> bool:
         return True
-
-    @property
-    def maximize(self) -> bool:
-        return self._loss_reverse.maximize
-
-    def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
-        result = self._loss_reverse.score(y, t, reduce=False)
-        assert isinstance(result, Assessment)
-        return result
 
     def forward(self, x: torch.Tensor, full_output: bool=False):
         if full_output:
@@ -371,6 +354,28 @@ class TargetTransform(Machine):
     def forward_update(self, x, t, outer: Objective=None):
         return x
 
+
+class ScoreReverseTransform(TargetTransform):
+    """Layer that transforms an input and does inverse transform on targets
+    """
+
+    def __init__(
+        self, loss_reverse: ScoreReverse, lr: float=1e-2
+    ):
+        """initializer"""
+        super().__init__(False)
+        self._lr = lr
+        self._loss_reverse = loss_reverse
+
+    @property
+    def maximize(self) -> bool:
+        return self._loss_reverse.maximize
+
+    def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
+        result = self._loss_reverse.score(y, t, reduce=False)
+        assert isinstance(result, Assessment)
+        return result
+    
     def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
 
         if update_inputs:

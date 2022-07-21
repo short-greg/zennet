@@ -154,7 +154,7 @@ class TestTargetTransform:
         x = torch.zeros(3, 2)
         t = torch.zeros(3, 2)
         loss_reverse = reversers.MSELossReverse()
-        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        transform = machinery.ScoreReverseTransform(loss_reverse, 0.5)
         result = transform.assess(x, t).mean().item()
         assert result, result == nn.MSELoss(reduction='mean')(x, t).item()
 
@@ -162,7 +162,7 @@ class TestTargetTransform:
         x = torch.zeros(3, 2)
         t = torch.zeros(3, 2)
         loss_reverse = reversers.MSELossReverse()
-        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        transform = machinery.ScoreReverseTransform(loss_reverse, 0.5)
         result = transform.backward_update(x, t, update_inputs=False)
         assert result is None
 
@@ -170,7 +170,7 @@ class TestTargetTransform:
         x = torch.zeros(3, 2)
         t = torch.zeros(3, 2)
         loss_reverse = reversers.MSELossReverse()
-        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        transform = machinery.ScoreReverseTransform(loss_reverse, 0.5)
         x_prime = transform.backward_update(x, t, update_inputs=True)
         assert x_prime.size() == x.size()
 
@@ -178,7 +178,7 @@ class TestTargetTransform:
         x = torch.zeros(3, 2)
         t = torch.zeros(3, 2)
         loss_reverse = reversers.MSELossReverse()
-        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        transform = machinery.ScoreReverseTransform(loss_reverse, 0.5)
         y = transform.forward(x)
         assert (y == x).all()
 
@@ -186,6 +186,6 @@ class TestTargetTransform:
         x = torch.zeros(3, 2)
         t = torch.zeros(3, 2)
         loss_reverse = reversers.MSELossReverse()
-        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        transform = machinery.ScoreReverseTransform(loss_reverse, 0.5)
         y = transform.forward_update(x, t)
         assert (y == x).all()
