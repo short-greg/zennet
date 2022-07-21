@@ -398,8 +398,15 @@ class Objective(ABC):
     def minimize(self) -> bool:
         return not self.maximize
 
-    def assess(self, x: torch.Tensor, t: torch.Tensor, regularize: bool=True) -> BatchAssessment:
+    def assess(self, x: torch.Tensor, t: torch.Tensor, regularize: bool=True, full_output: bool=False) -> BatchAssessment:
         
+        if full_output:
+            y, result = self.forward(x, full_output=True)
+            assessment = self.assess_output(y, t)
+            if regularize:
+                assessment = assessment + result.regularization
+            return assessment, y, result
+
         if regularize:
             y, result = self.forward(x, full_output=True)
             assessment = self.assess_output(y, t)
