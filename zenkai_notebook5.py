@@ -8,6 +8,8 @@ import tqdm
 import sklearn.multioutput
 from torchvision import transforms
 
+# blobs = SimpleClassification(batch_size=batch_size)
+from exp_utils.datasets import Digits
 from sklearn import multioutput
 
 def set_env():
@@ -25,17 +27,91 @@ import torch as th
 import torch.nn as nn
 import numpy as np
 
-from sklearn.datasets import make_blobs, make_classification
+# from sklearn.datasets import make_blobs, make_classification
 
 np.random.seed(1)
 # th.manual_seed(1)
 
 # %%
 
-
-
 from torchvision.datasets import MNIST
 from torchvision import transforms
+from sklearn import svm
+
+#%%
+from zenkai.machinery import TorchNN
+
+# builder = builders.MachineBuilder()
+sequence = machinery.Sequence([
+    TorchNN(nn.Sequential(nn.Linear(64,32), nn.Sigmoid()), nn.MSELoss),
+    TorchNN(nn.Sequential(nn.Linear(32, 10)), nn.CrossEntropyLoss)
+])
+
+batch_size = 64
+
+# n_iterations = len(X) // batch_size
+losses = []
+n_epochs = 100
+transform = transforms.Compose([transforms.ToTensor()])
+
+digits_trainset = Digits(True)
+# mnist_trainset = MNIST(root='./data', train=True, download=True, transform=transform)
+import torch.utils.data as data_utils
+
+#%%
+
+dataloader = data_utils.DataLoader(digits_trainset, shuffle=True, batch_size=batch_size, drop_last=True)
+accuracies = [] 
+with tqdm.tqdm(total=len(dataloader) * n_epochs) as tq:   
+    for _ in range(n_epochs):
+        for x_i, t_i in dataloader:
+            x_i = x_i.view(x_i.shape[0], -1).float() # / 255.0
+            t_i = t_i.long().view(-1)
+            # t_i = t_processor.forward(t_i)
+            assessment, y, result = sequence.assess(x_i, t_i, True, True)
+            accuracies.append((th.argmax(y, dim=1) == t_i.flatten()).float().mean().item())
+            losses.append(assessment.mean().item()[0])
+            sequence.backward_update(x_i, t_i, result)
+            # 
+            tq.set_postfix(
+                {'Loss': statistics.mean(losses[-2:]), 
+                'Accuracy': statistics.mean(accuracies[-2:])}, 
+                refresh=True
+            )
+            tq.update(1)
+        
+
+print(losses)
+
+
+# print(recorder.input_df)
+# print(recorder.theta_df)
+
+# for i in range(8):
+#    layer1_machines.append(svm.SVR())
+# machine = sklearn.multioutput.MultiOutputRegressor(
+#     svm.SVR(kernel='rbf', epsilon=0.05)
+# )
+
+# layer1 = machinery.SklearnMachine(
+#     modules.SKLearnModule(machine, 64, 8),  objective1, builder
+# )
+
+# layer2 = machinery.TorchNN(
+#     net2, objective2, builder2
+# )
+# sequence = machinery.Sequence(
+#     [layer1, layer2]
+# )
+# sequence = layer2
+# print('result: ', layer1.backward(X, t))
+# layer = machinery.Processed(
+#     [machinery.NP2TH(dtype=th.float32)], layer1
+# )
+
+# t_processor = machinery.NP2TH(dtype=th.int64)
+#t = t_processor.forward(t)
+
 
 # recorder = machinery.EuclidRecorder()
 # objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
@@ -59,83 +135,6 @@ from torchvision import transforms
 # sequence = machinery.TorchNN(
 #     nn.Sequential(net1, net2), objective2, builder
 # )
-from sklearn import svm
-
-
-# for i in range(8):
-#    layer1_machines.append(svm.SVR())
-# machine = sklearn.multioutput.MultiOutputRegressor(
-#     svm.SVR(kernel='rbf', epsilon=0.05)
-# )
-
-# layer1 = machinery.SklearnMachine(
-#     modules.SKLearnModule(machine, 64, 8),  objective1, builder
-# )
-
-# layer2 = machinery.TorchNN(
-#     net2, objective2, builder2
-# )
-# sequence = machinery.Sequence(
-#     [layer1, layer2]
-# )
-# sequence = layer2
-# print('result: ', layer1.backward(X, t))
-#%%
-from zenkai.machinery import TorchNN
-
-# builder = builders.MachineBuilder()
-sequence = machinery.Sequence([
-    TorchNN(nn.Sequential(nn.Linear(64,32), nn.Sigmoid()), nn.CrossEntropyLoss),
-    TorchNN(nn.Sequential(nn.Linear(32, 10)), nn.CrossEntropyLoss)
-])
-
-batch_size = 1600
-
-# n_iterations = len(X) // batch_size
-losses = []
-n_epochs = 100
-transform = transforms.Compose([transforms.ToTensor()])
-
-# blobs = SimpleClassification(batch_size=batch_size)
-from exp_utils.datasets import Digits
-
-digits_trainset = Digits(True)
-# mnist_trainset = MNIST(root='./data', train=True, download=True, transform=transform)
-import torch.utils.data as data_utils
-
-dataloader = data_utils.DataLoader(digits_trainset, shuffle=True, batch_size=batch_size, drop_last=True)
-accuracies = [] 
-with tqdm.tqdm(total=len(dataloader) * n_epochs) as tq:   
-    for _ in range(n_epochs):
-        for x_i, t_i in dataloader:
-            print(t_i.size())
-            x_i = x_i.view(x_i.shape[0], -1).float() # / 255.0
-            t_i = t_i.long().view(-1)
-            # t_i = t_processor.forward(t_i)
-            assessment, y, result = sequence.assess(x_i, t_i, True, True)
-            accuracies.append((th.argmax(y, dim=1) == t_i.flatten()).float().mean().item())
-            losses.append(assessment.mean().item()[0])
-            sequence.backward_update(x_i, t_i, result)
-            # 
-            tq.set_postfix(
-                {'Loss': statistics.mean(losses[-2:]), 
-                'Accuracy': statistics.mean(accuracies[-2:])}, 
-                refresh=True
-            )
-            tq.update(1)
-        
-
-# print(recorder.input_df)
-# print(recorder.theta_df)
-print(losses)
-
-# layer = machinery.Processed(
-#     [machinery.NP2TH(dtype=th.float32)], layer1
-# )
-
-# t_processor = machinery.NP2TH(dtype=th.int64)
-#t = t_processor.forward(t)
-
 
 # y = layer.forward(X)
 
