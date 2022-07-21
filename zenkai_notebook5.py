@@ -81,12 +81,13 @@ from sklearn import svm
 # sequence = layer2
 # print('result: ', layer1.backward(X, t))
 #%%
+from zenkai.machinery import TorchNN
 
-builder = builders.MachineBuilder()
-sequence = machinery.Sequence(
-    builder.torch_sequence([nn.Linear(64,32), nn.Sigmoid()], nn.MSELoss),
-    builder.torch_sequence([nn.Linear(32, 10)], nn.CrossEntropyLoss)
-)
+# builder = builders.MachineBuilder()
+sequence = machinery.Sequence([
+    TorchNN(nn.Sequential(nn.Linear(64,32), nn.Sigmoid()), nn.CrossEntropyLoss),
+    TorchNN(nn.Sequential(nn.Linear(32, 10)), nn.CrossEntropyLoss)
+])
 
 batch_size = 1600
 
@@ -96,7 +97,7 @@ n_epochs = 100
 transform = transforms.Compose([transforms.ToTensor()])
 
 # blobs = SimpleClassification(batch_size=batch_size)
-from .exp_utils.datasets import Digits
+from exp_utils.datasets import Digits
 
 digits_trainset = Digits(True)
 # mnist_trainset = MNIST(root='./data', train=True, download=True, transform=transform)
@@ -107,15 +108,14 @@ accuracies = []
 with tqdm.tqdm(total=len(dataloader) * n_epochs) as tq:   
     for _ in range(n_epochs):
         for x_i, t_i in dataloader:
-
+            print(t_i.size())
             x_i = x_i.view(x_i.shape[0], -1).float() # / 255.0
             t_i = t_i.long().view(-1)
             # t_i = t_processor.forward(t_i)
-            y, ys = sequence.output_ys(x_i)
+            assessment, y, result = sequence.assess(x_i, t_i, True, True)
             accuracies.append((th.argmax(y, dim=1) == t_i.flatten()).float().mean().item())
-            assessment = sequence.assess(y, t_i)
-            losses.append(assessment.item())
-            sequence.backward_update(x_i, t_i)
+            losses.append(assessment.mean().item()[0])
+            sequence.backward_update(x_i, t_i, result)
             # 
             tq.set_postfix(
                 {'Loss': statistics.mean(losses[-2:]), 
