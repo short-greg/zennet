@@ -2,17 +2,19 @@
 import typing
 import torch
 import torch.nn as nn
+
+from .hill_climbing import HillClimbInputOptim
+
+from .optimizers import GradInputOptim, GradThetaOptim
 from . import utils
 from .modules import SklearnModule
-from .optimizers import (
-    GradInputOptim, GradThetaOptim, GradThetaOptim, GradInputOptim
-)
+# from .optimizers import (
+#     GradInputOptim, GradThetaOptim, GradThetaOptim, GradInputOptim
+# )
 # from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
 from .base import (
-    Assessment, ScoreReverse, Objective, ParameterizedMachine, Machine, 
-    BatchAssessment, Result, Score, ScoreReverse, SklearnThetaOptim, TorchScore,
-    ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder,
-    
+    Assessment, InputOptimBuilder, ScoreReverse, Objective, ParameterizedMachine, Machine, 
+    BatchAssessment, Result, Score, ScoreReverse, SklearnThetaOptim, ThetaOptim, ThetaOptimBuilder, TorchScore
 )
 
 
@@ -68,7 +70,7 @@ class TorchNN(ParameterizedMachine):
 
     def __init__(
         self, module: nn.Module, loss_factory: typing.Type[nn.Module], 
-        theta_updater: ThetaOptimBuilder=None, input_updater: InputOptimBuilder=None,
+        theta_optim: ThetaOptimBuilder=None, input_optim: InputOptimBuilder=None,
         update_theta: bool=True, differentiable: bool=True
     ):
         """initializer
@@ -83,14 +85,8 @@ class TorchNN(ParameterizedMachine):
         super().__init__(update_theta)
         self._module = module
         self._score = TorchScore(loss_factory)
-        self._theta_updater =  (
-            theta_updater(self)
-            if theta_updater is not None else GradThetaOptim (module)
-        )
-        self._input_updater = (
-            input_updater(self) 
-            if input_updater is not None else GradInputOptim(module, skip_eval=True)
-        )
+        self._theta_optim = theta_optim(self) if theta_optim is not None else GradThetaOptim(module, False)
+        self._input_optim = input_optim(self) if input_optim is not None else GradInputOptim(False, skip_eval=True)
         self._maximize = False
         self._differentiable = differentiable
     
@@ -106,6 +102,10 @@ class TorchNN(ParameterizedMachine):
     def assess_output(self, y: torch.Tensor, t: torch.Tensor):
         return self._score(y, t, reduce=False)
     
+    @property
+    def module(self) -> nn.Module:
+        return self._module
+
     @property
     def theta(self):
         return utils.get_parameters(self._module)
@@ -123,7 +123,8 @@ class TorchNN(ParameterizedMachine):
     
     def forward_update(self, x, t, outer: Objective=None):
         if self._update_theta:
-            self._theta_updater.step(x, t, OuterPair(self.theta_objective(x, t), outer))
+            assert isinstance(self._theta_optim, ThetaOptim), '{}'.format(self._theta_optim)
+            self._theta_optim.step(x, t, OuterPair(self.theta_objective(x, t), outer))
  
         y = self.forward(x)
         return y
@@ -131,10 +132,10 @@ class TorchNN(ParameterizedMachine):
     def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
 
         if self._update_theta:
-            self._theta_updater.step(x, t, self.theta_objective(x, t), result=result)
+            self._theta_optim.step(x, t, self.theta_objective(x, t), result=result)
         
         if update_inputs:
-            x_prime, _ = self._input_updater.step(x, t, self.input_objective(x, t), result=result)
+            x_prime, _ = self._input_optim.step(x, t, self.input_objective(x, t), result=result)
             return x_prime
 
     @property
@@ -152,7 +153,7 @@ class SklearnMachine(Machine):
 
     def __init__(
         self, module: SklearnModule, scorer: TorchScore, 
-        theta_updater: SklearnOptimBuilder, input_updater: InputOptimBuilder,
+        theta_optim: ThetaOptimBuilder=None, input_optim: InputOptimBuilder=None,
         update_theta: bool=True, partial: bool=False
     ):
         """initializer
@@ -166,8 +167,8 @@ class SklearnMachine(Machine):
         """
         super().__init__(update_theta)
         self._module = module
-        self._theta_updater: SklearnThetaOptim = theta_updater(self._module)
-        self._input_updater = input_updater(self._module)
+        self._theta_optim = theta_optim(self) if theta_optim is not None else SklearnThetaOptim(module)
+        self._input_optim = input_optim(self) if input_optim is not None else HillClimbInputOptim()
         self._partial = partial
         self._fit = False
         self._score = scorer
@@ -177,6 +178,10 @@ class SklearnMachine(Machine):
 
     def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
         return self._score(y, t, reduce=False)
+
+    @property
+    def module(self) -> SklearnModule:
+        return self._module
 
     def forward(self, x: torch.Tensor, full_output: bool=False):
         device = x.device
@@ -208,10 +213,10 @@ class SklearnMachine(Machine):
     def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
         
         if self._update_theta:
-            self._theta_updater.step(x, t, self, result=result)
+            self._theta_optim.step(x, t, self, result=result)
         
         if update_inputs:
-            x_prime, _ = self._input_updater.step(x, t, objective=self, result=result)
+            x_prime, _ = self._input_optim.step(x, t, objective=self, result=result)
     
             return x_prime
 
@@ -220,7 +225,7 @@ class BlackboxMachine(Machine):
     """Layer that wraps a function that does not learn
     """
 
-    def __init__(self, f, score: Score, input_updater: InputOptimBuilder):
+    def __init__(self, f, score: Score, input_optim: InputOptimBuilder=None):
         """initializer
 
         Args:
@@ -230,7 +235,7 @@ class BlackboxMachine(Machine):
         """
         super().__init__(update_theta=False)
         self._f = f
-        self._input_updater = input_updater(f)
+        self._input_optim = input_optim(self) if input_optim is not None else HillClimbInputOptim()
         self._score = score
 
     def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
@@ -250,7 +255,7 @@ class BlackboxMachine(Machine):
     def backward_update(self, x, t, result: Result=None, update_inputs: bool= True) -> torch.Tensor:
         
         if update_inputs:
-            return self._input_updater.step(x, t, self, result=result)
+            return self._input_optim.step(x, t, self, result=result)
 
     @property
     def differentiable(self) -> bool:

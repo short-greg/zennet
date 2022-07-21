@@ -19,7 +19,7 @@ def set_env():
 set_env()
 
 from functools import partial
-from zenkai import machinery, modules, optimization
+from zenkai import machinery, modules, builders
 import sklearn
 import torch as th
 import torch.nn as nn
@@ -37,23 +37,24 @@ np.random.seed(1)
 from torchvision.datasets import MNIST
 from torchvision import transforms
 
-recorder = machinery.EuclidRecorder()
+# recorder = machinery.EuclidRecorder()
 # objective = mac.LossObjective(nn.MSELoss, reduction=mac.MeanReduction())
 # net = nn.Linear(2, 2)
 # optimizer = mac.THOptimBuilder().hill_climber()(net, objective)
 
-objective2 = modules.LossObjective(nn.CrossEntropyLoss, reduction=modules.MeanReduction())
-objective1 = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
+
+# objective2 = modules.LossObjective(nn.CrossEntropyLoss, reduction=modules.MeanReduction())
+# objective1 = modules.LossObjective(nn.MSELoss, reduction=modules.MeanReduction())
 # net1 = nn.Sequential(nn.Linear(2, 4), nn.Sigmoid())
-net2 = nn.Sequential(nn.BatchNorm1d(8), nn.Linear(8, 10))
-builder2 = optimization.THXPBuilder(
-    optimization.SingleOptimBuilder().grad(), 
-    # step_hill_climber(momentum=None, std=0.2, update_after=600).repeat(40),
-    optimization.SingleOptimBuilder().grad().repeat(10)
-)
-builder = optimization.SKOptimBuilder(
-    optimization.SingleOptimBuilder().step_hill_climber().repeat(4)
-)
+# net2 = nn.Sequential(nn.BatchNorm1d(8), nn.Linear(8, 10))
+# builder2 = optimization.THXPBuilder(
+#     optimization.SingleOptimBuilder().grad(), 
+#     # step_hill_climber(momentum=None, std=0.2, update_after=600).repeat(40),
+#     optimization.SingleOptimBuilder().grad().repeat(10)
+# )
+# builder = optimization.SKOptimBuilder(
+#     optimization.SingleOptimBuilder().step_hill_climber().repeat(4)
+# )
 
 # sequence = machinery.TorchNN(
 #     nn.Sequential(net1, net2), objective2, builder
@@ -63,23 +64,29 @@ from sklearn import svm
 
 # for i in range(8):
 #    layer1_machines.append(svm.SVR())
-machine = sklearn.multioutput.MultiOutputRegressor(
-    svm.SVR(kernel='rbf', epsilon=0.05)
-)
+# machine = sklearn.multioutput.MultiOutputRegressor(
+#     svm.SVR(kernel='rbf', epsilon=0.05)
+# )
 
-layer1 = machinery.SklearnMachine(
-    modules.SKLearnModule(machine, 64, 8),  objective1, builder
-)
+# layer1 = machinery.SklearnMachine(
+#     modules.SKLearnModule(machine, 64, 8),  objective1, builder
+# )
 
-layer2 = machinery.TorchNN(
-    net2, objective2, builder2
-)
-sequence = machinery.Sequence(
-    [layer1, layer2]
-)
+# layer2 = machinery.TorchNN(
+#     net2, objective2, builder2
+# )
+# sequence = machinery.Sequence(
+#     [layer1, layer2]
+# )
 # sequence = layer2
 # print('result: ', layer1.backward(X, t))
 #%%
+
+builder = builders.MachineBuilder()
+sequence = machinery.Sequence(
+    builder.torch_sequence([nn.Linear(64,32), nn.Sigmoid()], nn.MSELoss),
+    builder.torch_sequence([nn.Linear(32, 10)], nn.CrossEntropyLoss)
+)
 
 batch_size = 1600
 
@@ -108,9 +115,8 @@ with tqdm.tqdm(total=len(dataloader) * n_epochs) as tq:
             accuracies.append((th.argmax(y, dim=1) == t_i.flatten()).float().mean().item())
             assessment = sequence.assess(y, t_i)
             losses.append(assessment.item())
-            sequence.backward_update(x_i, t_i, update_theta=True, recorder=recorder)
-            # print(next(layer1.module.parameters()))
-            recorder.adv()
+            sequence.backward_update(x_i, t_i)
+            # 
             tq.set_postfix(
                 {'Loss': statistics.mean(losses[-2:]), 
                 'Accuracy': statistics.mean(accuracies[-2:])}, 
@@ -120,7 +126,7 @@ with tqdm.tqdm(total=len(dataloader) * n_epochs) as tq:
         
 
 # print(recorder.input_df)
-print(recorder.theta_df)
+# print(recorder.theta_df)
 print(losses)
 
 # layer = machinery.Processed(

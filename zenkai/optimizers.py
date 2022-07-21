@@ -4,11 +4,12 @@ import torch.nn as nn
 from abc import ABC, abstractmethod
 import torch
 
+
 from .modules import Invertable
 from . import utils
 from .base import (
     Assessment, Objective, InputOptim, Recording, 
-    Result, ScalarAssessment, ScalarNullAssessment, SklearnModule, 
+    Result, ScalarAssessment, ScalarNullAssessment, 
     ThetaOptim
 )
 import numpy as np

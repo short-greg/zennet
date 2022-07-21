@@ -91,8 +91,8 @@ class TestSequence:
             nn.Sigmoid()
         )
 
-        optim_theta = optim_builders.ThetaOptimBuilderStd().step_hill_climber()
-        optim_input = optim_builders.InputOptimBuilderStd().step_hill_climber()
+        optim_theta = optim_builders.HillClimberThetaBuilder().step()
+        optim_input = optim_builders.HillClimberInputBuilder().step()
         machine = machinery.TorchNN(layer1, nn.MSELoss, optim_theta, optim_input)
         machine2 = machinery.TorchNN(layer2, nn.MSELoss, optim_theta, optim_input)
         sequence = machinery.Sequence([machine, machine2])

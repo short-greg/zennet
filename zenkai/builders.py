@@ -1,169 +1,128 @@
 from functools import partial
+import typing
 from . import machinery
 from typing import TypeVar
 import torch
 
-from .base import Score, ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder, SklearnThetaOptim
-from .optimizers import GradInputOptim, GradThetaOptim, NRepeatInputOptim, NRepeatThetaOptim, NullThetaOptim, ThetaOptim
-from .hill_climbing import BinaryHillClimbPerturber, GaussianHillClimbPerturber, GaussianHillClimbSelector, HillClimbInputOptim, HillClimbThetaOptim, SimpleHillClimbPerturber, SimpleHillClimbSelector
+from .base import ParameterizedMachine, SklearnModule, SklearnThetaOptim, InputOptimBuilder, ThetaOptimBuilder
+from .optimizers import GradInputOptim, GradThetaOptim
+from .hill_climbing import HillClimbInputOptim, HillClimbThetaOptim, BinaryHillClimbPerturber, GaussianHillClimbPerturber, GaussianHillClimbSelector, SimpleHillClimbPerturber, SimpleHillClimbSelector
+
+import torch.nn as nn
+MachineBuilder = TypeVar("MachineBuilder")
 
 
-class ThetaOptimBuilderStd(ThetaOptimBuilder):
+# TODO: Remove the duplicate code below
+class HillClimberInputBuilder(InputOptimBuilder):
 
     def __init__(self):
-        
-        self._optim = None
-        self.grad(lr=1e-2)
-        self.n_repetitions = 1
-        self.is_null = False
+        super().__init__()
+        self._perturber = None
+        self._selector = None
+        self.step()
+
+    def step(self, maximize: bool=False):
+        self._perturber = SimpleHillClimbPerturber()
+        self._selector =  SimpleHillClimbSelector(maximize)
+        return self
+    
+    def binary(self, k: int, p: float, maximize: bool=False):
+        self._perturber = BinaryHillClimbPerturber(k, p, maximize)
+        self._selector = SimpleHillClimbSelector(maximize)
+        return self
+    
+    def gaussian(self, mean: float=-2, std: float=1, k: int=16, momentum: float=0.0, maximize: bool=False):
+        self._perturber = GaussianHillClimbPerturber(mean, std, k, momentum, maximize)
+        self._selector = GaussianHillClimbSelector(momentum, maximize)
+        return self
+    
+    def __call__(self, machine):
+        return HillClimbInputOptim(perturber=self._perturber, selector=self._selector)
+
+
+class HillClimberThetaBuilder(ThetaOptimBuilder):
+
+    def __init__(self, maximize: bool=False):
+        super().__init__()
+        self._perturber = None
+        self._selector = None
+        self.step(maximize)
+
+    def binary(self, k: int, p: float, maximize: bool=False):
+        self._perturber = BinaryHillClimbPerturber(k, p, maximize)
+        self._selector = SimpleHillClimbSelector(maximize)
+        return self
+
+    def step(self, maximize: bool=False):
+        self._perturber = SimpleHillClimbPerturber()
+        self._selector = SimpleHillClimbSelector(maximize)
+        return self
+    
+    def gaussian(self, mean: float=-2, std: float=1, k: int=16, momentum: float=0.0, maximize: bool=False):
+        self._perturber = GaussianHillClimbPerturber(mean, std, k, momentum, maximize)
+        self._selector = GaussianHillClimbSelector(momentum, maximize)
+        return self
+
+    def __call__(self, machine: ParameterizedMachine):
+        if not isinstance(machine, machinery.TorchNN):
+            raise RuntimeError('Can only use HillClimbThetaBuilder with Parameterized Machine')
+        return HillClimbThetaOptim(machine, perturber=self._perturber, selector=self._selector)
+
+
+class GradThetaBuilder(ThetaOptimBuilder):
+
+    def __init__(self):
+        super().__init__()
+        self._optim_cls = None
+        self._kwargs = {}
+        self.grad()
 
     def grad(self, optim_cls=None, **kwargs):
         optim_cls = optim_cls or  torch.optim.Adam
-        self._optim = partial (
-            GradThetaOptim,
-            optim=partial(optim_cls, **kwargs)
-        )
+        self._optim_cls = optim_cls
+        self._kwargs = kwargs
         return self
     
-    def step_hill_climber(self, maximize: bool=False):
-        perturber = SimpleHillClimbPerturber()
-        selector = SimpleHillClimbSelector(maximize)
-        self._optim = partial(HillClimbThetaOptim, perturber=perturber, selector=selector )
-        return self
+    def __call__(self, machine: machinery.TorchNN):
+        if not isinstance(machine, machinery.TorchNN):
+            raise RuntimeError('Can only use grad theta builder with TorchNN')
+        return GradThetaOptim(machine.module, False, partial(self._optim_cls, **self._kwargs))
     
-    def step_gaussian_hill_climber(self, mean: float=-2, std: float=1, k: int=16, momentum: float=0.0, maximize: bool=False):
-        perturber = GaussianHillClimbPerturber(mean, std, k, momentum, maximize)
-        selector = GaussianHillClimbSelector(momentum, maximize)
-        self._optim = partial(HillClimbThetaOptim, perturber=perturber, selector=selector)
-        return self
 
-    def null(self, is_null: bool=True):
-        self.is_null = is_null
-        return self
-    
-    def repeat(self, n_repetitions: int):
-
-        if n_repetitions <= 0:
-            raise RuntimeError("Repetitions must be greater than or equal to 1")
-        self.n_repetitions = n_repetitions
-        return self
-
-    def __call__(self, net) -> ThetaOptim:
-        if self.is_null:
-            return NullThetaOptim(net)
-        if self.n_repetitions > 1:
-            return NRepeatThetaOptim(self._optim(net), self.n_repetitions)
-        else:
-            return self._optim(net)
-
-
-class SklearnOptimBuilderStd(SklearnOptimBuilder):
+class GradInputBuider(InputOptimBuilder):
 
     def __init__(self):
-        
-        self.n_repetitions = 1
-        self.is_partial = False
-        self.is_null = False
+        super().__init__()
+        self._optim_cls = None
+        self._kwargs = {}
+        self.grad()
     
-    def partial(self, is_partial: bool=True):
-        self.is_partial = is_partial
-        return self
-    
-    def null(self, is_null: bool=True):
-        self.is_null = is_null
-        return self
-
-    def repeat(self, n_repetitions: int):
-
-        if n_repetitions <= 0:
-            raise RuntimeError("Repetitions must be greater than or equal to 1")
-        self.n_repetitions = n_repetitions
-        return self
-
-    def __call__(self, net) -> SklearnThetaOptim:
-        if self.is_null:
-            return NullThetaOptim(net)
-        optim = SklearnThetaOptim(net, self.is_partial)
-        if self.n_repetitions > 1:
-            return NRepeatThetaOptim(optim, self.n_repetitions)
-        return optim
-
-
-class InputOptimBuilderStd(InputOptimBuilder):
-
-    def __init__(self):
-        
-        self._optim = None
-        self.grad(lr=1e-2)
-        self.n_repetitions = 1
-
     def grad(self, optim_cls=None, **kwargs):
 
-        if optim_cls is None:
-            optim_cls = torch.optim.Adam
-
-        self._optim = partial (
-            GradInputOptim,
-            optim=partial(optim_cls, **kwargs)
-        )
+        optim_cls = optim_cls or  torch.optim.Adam
+        self._optim_cls = optim_cls
+        self._kwargs = kwargs
         return self
     
-    def step_hill_climber(self, maximize: bool=False):
-        perturber = SimpleHillClimbPerturber()
-        selector =  SimpleHillClimbSelector(maximize)
-        self._optim = partial(
-            HillClimbInputOptim, 
-            perturber=perturber, 
-            selector=selector
-        )
-        return self
-    
-    def step_binary_hill_climber(self, k: int, p: float, maximize: bool=False):
-        perturber = BinaryHillClimbPerturber(k, p, maximize)
-        selector = SimpleHillClimbSelector(maximize)
-        self._optim = partial(HillClimbInputOptim, perturber=perturber, selector=selector)
-        return self
-    
-    def step_gaussian_hill_climber(self, mean: float=-2, std: float=1, k: int=16, momentum: float=0.0, maximize: bool=False):
-        perturber = GaussianHillClimbPerturber(mean, std, k, momentum, maximize)
-        selector = GaussianHillClimbSelector(momentum, maximize)
-        self._optim = partial(HillClimbInputOptim, perturber=perturber, selector=selector)
-        return self
-
-    def repeat(self, n_repetitions: int):
-
-        if n_repetitions <= 0:
-            raise RuntimeError("Rsepetitions must be greater than or equal to 1")
-        self.n_repetitions = n_repetitions
-        return self
-
-    def __call__(self, net) -> ThetaOptim:
-        optim = self._optim(net)
-        if self.n_repetitions > 1:
-            return NRepeatInputOptim(optim, self.n_repetitions)
-        return optim
+    def __call__(self, machine):
+        return GradInputOptim(False, skip_eval=True)
 
 
-MachineBuilder = TypeVar("MachineBuilder")
-
-class MachineBuilder(object):
+class SklearnThetaBuilder(ThetaOptimBuilder):
 
     def __init__(self):
-
-        self.input_optim = InputOptimBuilderStd()
-        self.theta_optim = ThetaOptimBuilderStd()
-        self.sklearn_optim = SklearnOptimBuilderStd()
-
-    def torch(self, module, loss_factory, update_theta: bool=True, differentiable: bool=True):
-        
-        return machinery.TorchNN(
-            module, loss_factory, self._theta_optim_builder, self._input_optim_builder, 
-            update_theta, differentiable, 
-        )
-
-    def sklearn(self, module, scorer: Score):
-        return machinery.SklearnMachine(module, scorer, self._sklearn_optim, self._input_optim)
-
-    def blackbox(self, f, scorer: Score):
-        return machinery.BlackboxMachine(f, scorer, self._input_optim)
-
+        super().__init__()
+        self.is_partial = True
+    
+    def full(self):
+        self.is_partial = False
+        return self
+    
+    def partial(self):
+        self.is_partial = True
+        return self
+    
+    def __call__(self, machine: machinery.SklearnMachine):
+        if not isinstance(machine, machinery.SklearnMachine):
+            raise RuntimeError('Can only use SklearnThetaBuilder with SklearnMachine')
+        return SklearnThetaOptim(machine.module, self.is_partial)

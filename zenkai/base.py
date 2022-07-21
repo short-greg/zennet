@@ -398,7 +398,7 @@ class Objective(ABC):
     def minimize(self) -> bool:
         return not self.maximize
 
-    def assess(self, x: torch.Tensor, t: torch.Tensor, regularize: bool=True, full_output: bool=False) -> BatchAssessment:
+    def assess(self, x: torch.Tensor, t: torch.Tensor, regularize: bool=True, full_output: bool=False) -> typing.Union[BatchAssessment, typing.Tuple[BatchAssessment, torch.Tensor, Result]]:
         
         if full_output:
             y, result = self.forward(x, full_output=True)
@@ -520,6 +520,10 @@ class TorchScore(Score):
     def score(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False) -> torch.Tensor:
         output = self.torch_loss(x, t)
         
+        # account for the case where x is single dimensional (w/ 1 feature)
+        if output.dim() == 1:
+            output = output.unsqueeze(1)
+
         if self.reduction == 'mean' and not reduce:
             return BatchAssessment(output.view(x.size(0), -1).mean(1), maximize=self.maximize)
         elif self.reduction == 'mean':
@@ -596,18 +600,18 @@ class SklearnModule(nn.Module):
         pass
 
 
-class ThetaOptimBuilder(ABC):
+# class ThetaOptimBuilder(ABC):
 
-    @abstractmethod
-    def __call__(self, net) -> ThetaOptim:
-        pass
+#     @abstractmethod
+#     def __call__(self, net) -> ThetaOptim:
+#         pass
 
 
-class InputOptimBuilder(ABC):
+# class InputOptimBuilder(ABC):
 
-    @abstractmethod
-    def __call__(self, net) -> InputOptim:
-        pass
+#     @abstractmethod
+#     def __call__(self, net) -> InputOptim:
+#         pass
 
 
 class SklearnThetaOptim(ThetaOptim):
@@ -632,4 +636,40 @@ class SklearnOptimBuilder(ABC):
 
     @abstractmethod
     def __call__(self, net) -> SklearnThetaOptim:
+        pass
+
+
+class ThetaOptimBuilder(object):
+
+    def __init__(self):
+        super().__init__()
+        self.n_repetitions = 1
+
+    def repeat(self, n_repetitions: int):
+
+        if n_repetitions <= 0:
+            raise RuntimeError("Rsepetitions must be greater than or equal to 1")
+        self.n_repetitions = n_repetitions
+        return self
+
+    @abstractmethod
+    def __call__(self, machine) -> ThetaOptim:
+        pass
+
+
+class InputOptimBuilder(object):
+
+    def __init__(self):
+        super().__init__()
+        self.n_repetitions = 1
+
+    def repeat(self, n_repetitions: int):
+
+        if n_repetitions <= 0:
+            raise RuntimeError("Rsepetitions must be greater than or equal to 1")
+        self.n_repetitions = n_repetitions
+        return self
+
+    @abstractmethod
+    def __call__(self, machine) -> InputOptim:
         pass

@@ -161,9 +161,8 @@ class HillClimbThetaOptim(ThetaOptim):
 
 class HillClimbInputOptim(InputOptim):
 
-    def __init__(self, net: nn.Module, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
+    def __init__(self, perturber: HillClimbPerturber=None, selector: HillClimbSelector=None):
         super().__init__()
-        self._net = net
         self._perturber = perturber or SimpleHillClimbPerturber()
         self._selector = selector or SimpleHillClimbSelector()
         self._assessment = None

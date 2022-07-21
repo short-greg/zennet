@@ -120,8 +120,8 @@ class TestSklearnThetaOptim:
         )
         objective = SklearnMachine(
             module, TorchScore(nn.MSELoss, maximize=False),
-            optim_builders.SklearnOptimBuilderStd(), 
-            optim_builders.InputOptimBuilderStd().step_hill_climber(),
+            optim_builders.SklearnThetaBuilder(), 
+            optim_builders.HillClimberInputBuilder().step(),
             partial=False, 
         )
         assessment = optim.step(th.randn(2, 2), th.randn(2), objective)
@@ -134,8 +134,8 @@ class TestSklearnThetaOptim:
         )
         objective = SklearnMachine(
             module, TorchScore(nn.MSELoss, maximize=False),
-            optim_builders.SklearnOptimBuilderStd(), 
-            optim_builders.InputOptimBuilderStd().step_hill_climber(),
+            optim_builders.SklearnThetaBuilder(), 
+            optim_builders.HillClimberInputBuilder().step(),
             partial=True, 
         )
         assessment = optim.step(th.randn(2, 2), th.randn(2), objective)
