@@ -3,10 +3,10 @@ import sklearn.linear_model
 import sklearn.multioutput
 import torch.nn as nn
 
-from . import optim_builders
+from . import builders as optim_builders
 from .machinery import SklearnMachine
 
-from .base import Recording, ScalarAssessment, SklearnModule, TorchScore
+from .base import Recording, ScalarAssessment, SklearnThetaOptim, TorchScore
 
 from .machinery import TorchNN
 from . import modules
@@ -115,13 +115,13 @@ class TestSklearnThetaOptim:
 
     def test_evaluations_with_fit_is_one(self):
         module = modules.SklearnWrapper(sklearn.linear_model.LinearRegression(), 2, 2)
-        optim = optimizers.SklearnThetaOptim(
+        optim = SklearnThetaOptim(
             module, False
         )
         objective = SklearnMachine(
             module, TorchScore(nn.MSELoss, maximize=False),
-            optim_builders.SklearnOptimBuilder(), 
-            optim_builders.InputOptimBuilder().step_hill_climber(),
+            optim_builders.SklearnOptimBuilderStd(), 
+            optim_builders.InputOptimBuilderStd().step_hill_climber(),
             partial=False, 
         )
         assessment = optim.step(th.randn(2, 2), th.randn(2), objective)
@@ -129,13 +129,13 @@ class TestSklearnThetaOptim:
 
     def test_evaluations_with_partial_fit_is_one(self):
         module = modules.SklearnWrapper(sklearn.linear_model.LinearRegression(), 2, 2)
-        optim = optimizers.SklearnThetaOptim(
+        optim = SklearnThetaOptim(
             module, False
         )
         objective = SklearnMachine(
             module, TorchScore(nn.MSELoss, maximize=False),
-            optim_builders.SklearnOptimBuilder(), 
-            optim_builders.InputOptimBuilder().step_hill_climber(),
+            optim_builders.SklearnOptimBuilderStd(), 
+            optim_builders.InputOptimBuilderStd().step_hill_climber(),
             partial=True, 
         )
         assessment = optim.step(th.randn(2, 2), th.randn(2), objective)

@@ -3,8 +3,8 @@ from . import machinery
 from typing import TypeVar
 import torch
 
-from .base import Score, ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
-from .optimizers import GradInputOptim, GradThetaOptim, NRepeatInputOptim, NRepeatThetaOptim, NullThetaOptim, SklearnThetaOptim, ThetaOptim
+from .base import Score, ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder, SklearnThetaOptim
+from .optimizers import GradInputOptim, GradThetaOptim, NRepeatInputOptim, NRepeatThetaOptim, NullThetaOptim, ThetaOptim
 from .hill_climbing import BinaryHillClimbPerturber, GaussianHillClimbPerturber, GaussianHillClimbSelector, HillClimbInputOptim, HillClimbThetaOptim, SimpleHillClimbPerturber, SimpleHillClimbSelector
 
 

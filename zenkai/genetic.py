@@ -2,8 +2,7 @@ from abc import ABC, abstractmethod
 import typing
 import torch
 import torch.nn as nn
-
-from zenkai.machinery import TorchNN
+from .machinery import TorchNN
 # from .optimizers import , get_theta, Scorer, update_theta
 from .base import Objective, PopulationAssessment, ScalarAssessment, ThetaOptim
 

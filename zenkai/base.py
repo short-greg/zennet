@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod, abstractproperty
 import typing
 import torch
+import math
 import pandas as pd
 import torch.nn as nn
 from .utils import batch_flatten
@@ -455,12 +456,13 @@ class Score(object):
         return self.score(x, t, reduce)
 
 
-class LossReverse(Score):
+class ScoreReverse(Score):
 
     def __init__(self, loss: typing.Type[nn.Module]):
         self._loss = loss(reduction='none')
         self._score = TorchScore(loss)
 
+    @property
     def maximize(self) -> bool:
         return False
 
@@ -469,70 +471,10 @@ class LossReverse(Score):
         pass
 
     def score(self, x: torch.Tensor, t: torch.Tensor, reduce: bool= False) -> typing.Union[ScalarAssessment, BatchAssessment]:
-        return self._score(x, t, reduce)
-
-
-class MSELossReverse(LossReverse):
-
-    def __init__(self):
-        super().__init__(nn.MSELoss)
-    
-    def reverse(self, x: torch.Tensor, t: torch.Tensor, lr: float=1e-2) -> torch.Tensor:
-        # if x - t == positive, dx = negative. vice versa
-        return x + torch.sqrt(lr * self._loss(x, t)) * -torch.sign(x - t)
-
-
-class GeneralLossReverse(LossReverse):
-
-    def __init__(self, loss: typing.Type[nn.Module], maxiter: int=20):
-        super().__init__(loss)
-
-        # TODO: Use this
-        self._maxiter = maxiter
-
-    def reverse(self, x: torch.Tensor, t: torch.Tensor, lr: float=1e-2) -> torch.Tensor:
-        # if x - t == positive, dx = negative. vice versa
-        # 1) convert to numpy
-        # 2) 
-
-        # set up bounds
-        # if x > t.. make t a lowerbound and x an upper bound
-        # otherwise vice versa
-        # ensure that 0 <= lr <= 1
-        # use nelder mead
-        # maxiter = 5pip in
-
-        # This is the basics of how it should work... Need to test
-
-        shape = x.shape
-        x = x.flatten()
-        t = t.flatten()
-        t = t.detach().cpu()
-
-        target_loss = (1 - lr) * self._loss(x, t)
-
-        def objective(pt):
-            # print('Shapes: ',  pt.shape,t.shape )
-            result = ((target_loss - self._loss(torch.tensor(pt), t)) ** 2)
-            print(result)
-            return result.mean().item()
-            
-            # may need to compute the jacobian
-            # pt = torch.tensor(pt)
-            # pt = freshen(pt)
-            # self._loss(pt, t).mean().backward()
-            # grad = pt.grad.detach().cpu().numpy()
-            # print(grad)
-            # return grad
-
-        lb = torch.min(x, t).detach().cpu().numpy()
-        ub = torch.max(x, t).detach().cpu().numpy()
-        
-        bounds = sciopt.Bounds(lb, ub) 
-        # find out how to set the maximium number of iterations
-        x_prime = sciopt.minimize(objective, x.detach().cpu().numpy(), method='Powell', bounds=bounds).x
-        
-        return torch.tensor(x_prime, dtype=x.dtype, device=x.device).view(shape)
+        result = self._score.score(x, t, False)
+        if reduce:
+            return result.mean()
+        return result
 
 
 class Regularize(object):
@@ -568,16 +510,16 @@ class TorchScore(Score):
     def maximize(self):
         return self._maximize
     
-    def score(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False):
+    def score(self, x: torch.Tensor, t: torch.Tensor, reduce: bool=False) -> torch.Tensor:
         output = self.torch_loss(x, t)
         
         if self.reduction == 'mean' and not reduce:
-            return output.view(x.size(0), -1).mean(1)
+            return BatchAssessment(output.view(x.size(0), -1).mean(1), maximize=self.maximize)
         elif self.reduction == 'mean':
-            return output.mean()
+            return ScalarAssessment(output.mean(), maximize=self.maximize)
         elif self.reduction == 'sum' and not reduce:
-            return output.view(x.size(0), -1).sum(1)
-        return output.sum()
+            return BatchAssessment(output.view(x.size(0), -1).sum(1), maximize=self.maximize)
+        return ScalarAssessment(output.sum(), maximize=self.maximize)
 
 
 class ThetaOptim(ABC):

@@ -1,3 +1,4 @@
+import math
 import typing
 import torch.nn as nn
 from abc import ABC, abstractmethod
@@ -246,7 +247,7 @@ class LeastSquaresBoundedInputOptimizer(InputOptim):
     """Optimizer to bind . Use if the incoming value is from a sigmoid
     """
 
-    def __init__(self, linear: nn.Linear, act_inverse: Invertable, bounds=(-torch.inf, torch.inf), max_iter: int=5):
+    def __init__(self, linear: nn.Linear, act_inverse: Invertable, bounds=(-math.inf, math.inf), max_iter: int=5):
 
         self._linear = linear
         self._act_inverse = act_inverse

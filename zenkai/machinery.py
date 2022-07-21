@@ -9,8 +9,8 @@ from .optimizers import (
 )
 # from .optim_builders import ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder
 from .base import (
-    Objective, ParameterizedMachine, Machine, 
-    BatchAssessment, Result, Score, SklearnThetaOptim, TorchScore,
+    Assessment, ScoreReverse, Objective, ParameterizedMachine, Machine, 
+    BatchAssessment, Result, Score, ScoreReverse, SklearnThetaOptim, TorchScore,
     ThetaOptimBuilder, SklearnOptimBuilder, InputOptimBuilder,
     
 )
@@ -104,8 +104,7 @@ class TorchNN(ParameterizedMachine):
         return self._differentiable
 
     def assess_output(self, y: torch.Tensor, t: torch.Tensor):
-        evaluation = self._score(y, t, reduce=False)
-        return BatchAssessment(evaluation, evaluation, False)
+        return self._score(y, t, reduce=False)
     
     @property
     def theta(self):
@@ -177,8 +176,7 @@ class SklearnMachine(Machine):
         return False
 
     def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
-        evaluation = self._score(y, t, reduce=False)
-        return BatchAssessment(evaluation, evaluation, False)
+        return self._score(y, t, reduce=False)
 
     def forward(self, x: torch.Tensor, full_output: bool=False):
         device = x.device
@@ -345,20 +343,25 @@ class TargetTransform(Machine):
     """
 
     def __init__(
-        self, loss_reverse, lr: float=1e-2
+        self, loss_reverse: ScoreReverse, lr: float=1e-2
     ):
-        """initializer
-
-        Args:
-            objective (Objective)
-        """
+        """initializer"""
         super().__init__(False)
         self._lr = lr
         self._loss_reverse = loss_reverse
-        self._score = TorchScore(self._loss_reverse.loss)
+
+    @property
+    def differentiable(self) -> bool:
+        return True
+
+    @property
+    def maximize(self) -> bool:
+        return self._loss_reverse.maximize
 
     def assess_output(self, y: torch.Tensor, t: torch.Tensor)-> BatchAssessment:
-        return self._loss_reverse.score(y, t)
+        result = self._loss_reverse.score(y, t, reduce=False)
+        assert isinstance(result, Assessment)
+        return result
 
     def forward(self, x: torch.Tensor, full_output: bool=False):
         if full_output:

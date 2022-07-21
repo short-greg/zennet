@@ -1,6 +1,6 @@
 import typing
 
-from . import optim_builders
+from . import builders as optim_builders
 
 from . import base
 from . import machinery
@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch as torch
 from functools import partial
 import numpy as np
+from . import reversers
 
 
 class TestTorchNN:
@@ -78,7 +79,6 @@ class TestTorchNN:
         assert (before == after).all()
 
 
-
 class TestSequence:
 
     def _build_layer_and_machine(self):
@@ -91,8 +91,8 @@ class TestSequence:
             nn.Sigmoid()
         )
 
-        optim_theta = optim_builders.ThetaOptimBuilder().step_hill_climber()
-        optim_input = optim_builders.InputOptimBuilder().step_hill_climber()
+        optim_theta = optim_builders.ThetaOptimBuilderStd().step_hill_climber()
+        optim_input = optim_builders.InputOptimBuilderStd().step_hill_climber()
         machine = machinery.TorchNN(layer1, nn.MSELoss, optim_theta, optim_input)
         machine2 = machinery.TorchNN(layer2, nn.MSELoss, optim_theta, optim_input)
         sequence = machinery.Sequence([machine, machine2])
@@ -110,8 +110,8 @@ class TestSequence:
         torch.manual_seed(1)
         x = torch.zeros(3, 2)
         t = torch.rand(3, 2)
-        print(layer2(layer1(x)).size(), t.size())
-        target = nn.MSELoss()(layer2(layer1(x)), t)
+        # the mean of the batch mean
+        target = nn.MSELoss(reduction='none')(layer2(layer1(x)), t).mean(dim=1).mean()
         reg, _ = machine.assess(x, t).mean().item()
         assert (reg == target).all()
 
@@ -146,3 +146,46 @@ class TestSequence:
         # TODO: Do a better test.. Relies on manual seed
         # so if something changes in the code.. this will break.
         assert (before != after).any()
+
+
+class TestTargetTransform:
+
+    def test_transform_assess_is_same_as_mse(self):
+        x = torch.zeros(3, 2)
+        t = torch.zeros(3, 2)
+        loss_reverse = reversers.MSELossReverse()
+        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        result = transform.assess(x, t).mean().item()
+        assert result, result == nn.MSELoss(reduction='mean')(x, t).item()
+
+    def test_transform_backward_update_returns_nothing_when_inputs_is_false(self):
+        x = torch.zeros(3, 2)
+        t = torch.zeros(3, 2)
+        loss_reverse = reversers.MSELossReverse()
+        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        result = transform.backward_update(x, t, update_inputs=False)
+        assert result is None
+
+    def test_transform_backward_update_returns_updated_x_when_inputs_is_true(self):
+        x = torch.zeros(3, 2)
+        t = torch.zeros(3, 2)
+        loss_reverse = reversers.MSELossReverse()
+        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        x_prime = transform.backward_update(x, t, update_inputs=True)
+        assert x_prime.size() == x.size()
+
+    def test_transform_forward_outputs_x(self):
+        x = torch.zeros(3, 2)
+        t = torch.zeros(3, 2)
+        loss_reverse = reversers.MSELossReverse()
+        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        y = transform.forward(x)
+        assert (y == x).all()
+
+    def test_transform_forward_update_outputs_x(self):
+        x = torch.zeros(3, 2)
+        t = torch.zeros(3, 2)
+        loss_reverse = reversers.MSELossReverse()
+        transform = machinery.TargetTransform(loss_reverse, 0.5)
+        y = transform.forward_update(x, t)
+        assert (y == x).all()
